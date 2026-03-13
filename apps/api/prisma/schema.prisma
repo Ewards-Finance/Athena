@@ -1,0 +1,319 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String             @id @default(cuid())
+  email             String             @unique
+  password          String
+  role              Role               @default(EMPLOYEE)
+  isActive          Boolean            @default(true)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  attendanceRecords AttendanceRecord[]
+  leaveBalances     LeaveBalance[]
+  leaveRequests     LeaveRequest[]     @relation("EmployeeLeaves")
+  managedLeaves     LeaveRequest[]     @relation("ManagerApprovals")
+  notifications     Notification[]
+  payslipEntries    PayslipEntry[]
+  profile           Profile?
+  punchMapping      PunchMapping?
+  claims            Reimbursement[]
+  workLogs          WorkLog[]
+}
+
+model Profile {
+  id                   String    @id @default(cuid())
+  userId               String    @unique
+  firstName            String
+  lastName             String
+  dateOfBirth          DateTime?
+  gender               String?
+  bloodGroup           String?
+  personalEmail        String?
+  phone                String?
+  emergencyContact     String?
+  employeeId           String    @unique
+  designation          String    @default("")
+  department           String    @default("")
+  dateOfJoining        DateTime?
+  officeLocation       String?   @default("Kolkata")
+  managerId            String?
+  pan                  String?
+  aadharNumber         String?
+  uan                  String?
+  bankAccountNumber    String    @default("")
+  ifscCode             String    @default("")
+  bankName             String    @default("")
+  kycDocumentUrl       String?
+  appointmentLetterUrl String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  annualCtc            Float     @default(0)
+  employmentType       String    @default("FULL_TIME") // "FULL_TIME" | "INTERN"
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model LeaveRequest {
+  id             String      @id @default(cuid())
+  employeeId     String
+  managerId      String?
+  leaveType      String
+  startDate      DateTime
+  endDate        DateTime
+  totalDays      Float
+  reason         String
+  status         LeaveStatus @default(PENDING)
+  managerComment String?
+  approvedAt     DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  durationType   String?
+  singleDayType  String?
+  startDayType   String?
+  endDayType     String?
+  employee       User        @relation("EmployeeLeaves", fields: [employeeId], references: [id])
+  manager        User?       @relation("ManagerApprovals", fields: [managerId], references: [id])
+}
+
+model Reimbursement {
+  id          String        @id @default(cuid())
+  employeeId  String
+  category    ClaimCategory
+  amount      Float
+  description String
+  billUrl     String?
+  status      ClaimStatus   @default(PENDING)
+  paidAt      DateTime?
+  paidNote    String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  employee    User          @relation(fields: [employeeId], references: [id])
+}
+
+model LeaveBalance {
+  id        String   @id @default(cuid())
+  userId    String
+  year      Int
+  leaveType String
+  total     Float
+  used      Float    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, year, leaveType])
+}
+
+model Holiday {
+  id        String   @id @default(cuid())
+  name      String
+  date      DateTime
+  type      String?
+  createdAt DateTime @default(now())
+}
+
+model LeavePolicy {
+  id           String   @id @default(cuid())
+  leaveType    String   @unique
+  label        String
+  defaultTotal Int
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Announcement {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  createdBy String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  link      String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PayrollComponent {
+  id        String        @id @default(cuid())
+  name      String        @unique
+  type      ComponentType
+  calcType  CalcType
+  value     Float         @default(0)
+  isActive  Boolean       @default(true)
+  order     Int           @default(0)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+}
+
+model PayrollRun {
+  id          String         @id @default(cuid())
+  month       Int
+  year        Int
+  status      PayrollStatus  @default(DRAFT)
+  processedBy String
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  entries     PayslipEntry[]
+
+  @@unique([month, year])
+}
+
+model PayslipEntry {
+  id              String     @id @default(cuid())
+  payrollRunId    String
+  userId          String
+  monthlyCtc      Float
+  workingDays     Int
+  lwpDays         Float      @default(0)
+  paidDays        Float
+  earnings        Json
+  deductions      Json
+  reimbursements  Float      @default(0)
+  grossPay        Float
+  totalDeductions Float
+  netPay          Float
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  payrollRun      PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  user            User       @relation(fields: [userId], references: [id])
+
+  @@unique([payrollRunId, userId])
+}
+
+model WorkLog {
+  id        String   @id @default(cuid())
+  userId    String
+  date      DateTime
+  content   String
+
+  // Auto-APPROVED on submit; manager can optionally REJECT
+  status        String    @default("APPROVED") // "APPROVED" | "REJECTED"
+  rejectedBy    String?   // User.id of manager/admin who rejected
+  rejectedAt    DateTime?
+  rejectionNote String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+}
+
+// DeclaredWFH: HR Admin can declare specific dates as company-wide WFH
+// All employees must submit a worklog for these dates — missing = LWP deduction
+model DeclaredWFH {
+  id        String   @id @default(cuid())
+  date      DateTime // midnight UTC
+  reason    String?
+  createdBy String   // User.id of admin
+
+  createdAt DateTime @default(now())
+
+  @@unique([date])
+}
+
+model PunchMapping {
+  id        String   @id @default(cuid())
+  enNo      Int      @unique
+  userId    String   @unique
+  label     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AttendanceImport {
+  id            String             @id @default(cuid())
+  month         Int
+  year          Int
+  fileName      String
+  importedBy      String
+  recordCount     Int
+  unmappedEnNos   Json
+  arrivalTime     String?           // "HH:MM" — standard cutoff; null = policy not yet applied
+  extensionDates  Json @default("[]") // string[] of "YYYY-MM-DD" — days with 11:00 AM cutoff
+  createdAt       DateTime           @default(now())
+  records         AttendanceRecord[]
+
+  @@unique([month, year])
+}
+
+model AttendanceRecord {
+  id            String           @id @default(cuid())
+  userId        String
+  importId      String
+  date          DateTime
+  checkIn       DateTime?
+  checkOut      DateTime?
+  hoursWorked   Float?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  checkInManual DateTime?
+  isLate        Boolean          @default(false)
+  lwpDeduction  Float            @default(0)
+  import        AttendanceImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  user          User             @relation(fields: [userId], references: [id])
+
+  @@unique([userId, date])
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum ClaimCategory {
+  TRAVEL
+  FOOD
+  INTERNET
+  MISCELLANEOUS
+}
+
+enum ClaimStatus {
+  PENDING
+  APPROVED
+  PAID
+  REJECTED
+}
+
+enum ComponentType {
+  EARNING
+  DEDUCTION
+}
+
+enum CalcType {
+  PERCENTAGE_OF_CTC
+  FIXED
+  MANUAL
+  AUTO_PT
+}
+
+enum PayrollStatus {
+  DRAFT
+  FINALIZED
+}

@@ -1,0 +1,223 @@
+================================================================================
+  ATHENA V2 - BUILD REPORT
+  Generated: 2026-03-09 (Auto-pilot session)
+================================================================================
+
+STATUS: ALL TASKS COMPLETE ✅
+Database: MIGRATED ✅
+Seed Data: LOADED ✅
+API: HEALTH CHECK PASSED ✅
+Frontend: TYPESCRIPT CLEAN (0 errors) ✅
+
+--------------------------------------------------------------------------------
+TASK 1: PROJECT INITIALIZATION
+--------------------------------------------------------------------------------
+[✅] Monorepo created at root with npm workspaces
+[✅] apps/api  → Node.js + Express + TypeScript
+[✅] apps/web  → React 18 + Vite + TypeScript
+[✅] Root package.json with `dev:api`, `dev:web`, `seed`, `db:migrate` scripts
+[✅] .gitignore configured (excludes node_modules, dist, .env, migrations)
+[✅] .env files at root and apps/api (DATABASE_URL = athena_db / Ewards4321)
+
+Directory layout:
+  Athena2.0/
+  ├── .env                          ← Root env (API reads this at runtime)
+  ├── .gitignore
+  ├── package.json                  ← Monorepo root
+  ├── spec.md
+  ├── apps/
+  │   ├── api/
+  │   │   ├── .env                  ← API-local env (Prisma CLI reads this)
+  │   │   ├── package.json
+  │   │   ├── tsconfig.json
+  │   │   ├── prisma/
+  │   │   │   ├── schema.prisma     ← Full DB schema
+  │   │   │   ├── seed.ts           ← Seed script (1 admin + 3 users)
+  │   │   │   └── migrations/       ← Auto-generated SQL migration
+  │   │   └── src/
+  │   │       ├── index.ts          ← Express entry point
+  │   │       ├── middleware/
+  │   │       │   └── auth.ts       ← JWT + RBAC middleware
+  │   │       └── routes/
+  │   │           ├── auth.ts       ← POST /login, GET /me
+  │   │           ├── employees.ts  ← CRUD employee profiles
+  │   │           ├── leaves.ts     ← Leave lifecycle + approvals
+  │   │           ├── claims.ts     ← Reimbursement claims + payments
+  │   │           ├── dashboard.ts  ← Aggregated stats for stat cards
+  │   │           ├── holidays.ts   ← Holiday calendar (admin-managed)
+  │   │           └── announcements.ts ← Notice board
+  │   └── web/
+  │       ├── package.json
+  │       ├── tsconfig.json
+  │       ├── vite.config.ts        ← Vite + path alias + API proxy
+  │       ├── tailwind.config.js    ← Tailwind CSS config
+  │       ├── components.json       ← Shadcn UI config
+  │       └── src/
+  │           ├── main.tsx
+  │           ├── App.tsx           ← Router + Protected routes
+  │           ├── index.css         ← Tailwind + Shadcn CSS variables
+  │           ├── components/
+  │           │   ├── Layout.tsx    ← Sidebar + top bar
+  │           │   └── ui/           ← Shadcn UI components (Button, Card, etc.)
+  │           ├── hooks/
+  │           │   └── useAuth.ts    ← Zustand auth store + localStorage
+  │           ├── lib/
+  │           │   ├── api.ts        ← Axios instance with JWT interceptor
+  │           │   └── utils.ts      ← cn(), formatDate(), formatCurrency()
+  │           └── pages/
+  │               ├── Login.tsx     ← Login form with demo credentials panel
+  │               ├── Dashboard.tsx ← Stat cards + notice board
+  │               ├── Profile.tsx   ← Personal + statutory + bank details
+  │               ├── Leaves.tsx    ← Apply/approve/reject leaves
+  │               ├── Claims.tsx    ← Submit/approve/pay claims
+  │               ├── Organization.tsx ← Employee directory (Admin only)
+  │               └── NotFound.tsx  ← 404 page
+
+--------------------------------------------------------------------------------
+TASK 2: DATABASE SCHEMA
+--------------------------------------------------------------------------------
+[✅] schema.prisma with full Employee Master fields
+[✅] PAN, Aadhar, UAN, bankAccountNumber stored as String (preserves leading zeros)
+[✅] IFSC also stored as String (exact format preserved)
+[✅] Models: User, Profile, LeaveRequest, Reimbursement, Holiday, Announcement
+[✅] Enums: Role, LeaveType, LeaveStatus, ClaimCategory, ClaimStatus
+[✅] Relationships:
+     User ──(1:1)──> Profile
+     User ──(1:N)──> LeaveRequest (as employee AND as manager)
+     User ──(1:N)──> Reimbursement
+[✅] Migration applied: 20260309050701_init
+[✅] Prisma Client generated
+
+--------------------------------------------------------------------------------
+TASK 3: BACKEND AUTH + SEED
+--------------------------------------------------------------------------------
+[✅] JWT authentication (jsonwebtoken)
+[✅] Password hashing (bcryptjs, cost factor 10)
+[✅] RBAC middleware: authenticate() + authorize([roles])
+[✅] Three roles: ADMIN, MANAGER, EMPLOYEE
+[✅] Seed populated with:
+
+     Role      | Email                      | Password
+     ----------|----------------------------|---------------
+     ADMIN     | admin@ewards.com           | Admin@123
+     MANAGER   | manager@ewards.com         | Employee@123
+     EMPLOYEE  | rahul.verma@ewards.com     | Employee@123
+     EMPLOYEE  | sneha.roy@ewards.com       | Employee@123
+
+[✅] Seed also includes:
+     - 2 demo leave requests (1 PENDING, 1 APPROVED)
+     - 7 holidays (Holi, Eid, Independence Day, Durga Puja, Diwali, etc.)
+     - 1 welcome announcement
+
+[✅] All route-level Zod validation:
+     - PAN: regex /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/
+     - IFSC: regex /^[A-Z]{4}0[A-Z0-9]{6}$/
+     - Aadhar: exactly 12 digits
+     - Login: valid email + min 6 chars
+     - Leave dates: end >= start, valid date strings
+     - Claims: positive amount, valid category
+
+--------------------------------------------------------------------------------
+TASK 4: FRONTEND UI
+--------------------------------------------------------------------------------
+[✅] Vite + React 18 + TypeScript
+[✅] Tailwind CSS with CSS variables (light/dark mode ready)
+[✅] Shadcn UI components installed manually:
+     Button, Card, Badge, Input, Label, Avatar, Separator
+[✅] Sidebar navigation with role-based visibility:
+     - Dashboard, My Profile, Leaves, Claims → all roles
+     - Organization → ADMIN only
+[✅] Dashboard stat cards:
+     - Total Employees
+     - Pending Approvals (contextual: own vs team)
+     - On Leave Today
+     - Pending Claims
+[✅] Notice Board on dashboard (seeded welcome announcement shows up)
+[✅] Login page with show/hide password + demo credential hint panel
+[✅] All forms use React Hook Form + Zod resolver
+[✅] Protected routes: unauthenticated → redirect to /login
+[✅] JWT auto-injected on all API calls (Axios interceptor)
+[✅] 401 response → auto logout + redirect to /login
+[✅] Vite dev proxy: /api → http://localhost:3001 (no CORS issues in dev)
+
+--------------------------------------------------------------------------------
+THINGS NOT IMPLEMENTED (per spec instructions)
+--------------------------------------------------------------------------------
+[⏭] Biometric Parser — explicitly excluded per spec
+[⏭] Document Upload UI (backend multer ready, UI not wired)
+[⏭] Salary module — not in spec
+[⏭] Notification emails — not in spec
+
+--------------------------------------------------------------------------------
+ERRORS ENCOUNTERED
+--------------------------------------------------------------------------------
+1. Prisma CLI could not find DATABASE_URL because it looks for .env in the
+   working directory (apps/api), not the monorepo root. Fixed by creating
+   apps/api/.env as a local copy.
+
+2. Initial DATABASE_URL had placeholder password "password" — updated after
+   user provided the correct PostgreSQL password (Ewards4321).
+
+3. multer v1.x deprecation warning on npm install — non-blocking, multer is
+   only used for the document upload endpoint stub (not wired in UI yet).
+
+--------------------------------------------------------------------------------
+HOW TO RUN THE DASHBOARD
+--------------------------------------------------------------------------------
+
+Step 1 — Start the API server (Terminal 1):
+  cd "C:\Users\mihik\Desktop\Python Projects\Athena2.0\apps\api"
+  npm run dev
+
+Step 2 — Start the frontend (Terminal 2):
+  cd "C:\Users\mihik\Desktop\Python Projects\Athena2.0\apps\web"
+  npm run dev
+
+Step 3 — Open your browser:
+  http://localhost:5173
+
+Step 4 — Log in with:
+  Admin:    admin@ewards.com    / Admin@123
+  Employee: rahul.verma@ewards.com / Employee@123
+
+If you need to re-seed the database:
+  cd "C:\Users\mihik\Desktop\Python Projects\Athena2.0\apps\api"
+  npm run seed
+
+If you need to reset and re-migrate:
+  npx prisma migrate reset
+  (then run seed again)
+
+--------------------------------------------------------------------------------
+API ENDPOINTS SUMMARY
+--------------------------------------------------------------------------------
+POST   /api/auth/login                → Returns JWT
+GET    /api/auth/me                   → Current user info
+GET    /api/dashboard/stats           → Stat card data
+GET    /api/employees                 → List all (Admin/Manager)
+GET    /api/employees/:id             → Single employee profile
+POST   /api/employees                 → Create employee (Admin)
+PUT    /api/employees/:id             → Update profile
+DELETE /api/employees/:id             → Deactivate (Admin)
+GET    /api/leaves                    → List leaves
+GET    /api/leaves/pending            → Pending approvals
+POST   /api/leaves                    → Apply for leave
+PATCH  /api/leaves/:id/approve        → Approve leave
+PATCH  /api/leaves/:id/reject         → Reject leave
+DELETE /api/leaves/:id                → Cancel leave
+GET    /api/claims                    → List claims
+POST   /api/claims                    → Submit claim
+PATCH  /api/claims/:id/approve        → Approve claim
+PATCH  /api/claims/:id/pay            → Mark as paid (Admin)
+PATCH  /api/claims/:id/reject         → Reject claim
+GET    /api/holidays                  → List holidays
+POST   /api/holidays                  → Add holiday (Admin)
+DELETE /api/holidays/:id              → Remove holiday (Admin)
+GET    /api/announcements             → List announcements
+POST   /api/announcements             → Post announcement (Admin)
+DELETE /api/announcements/:id         → Deactivate announcement (Admin)
+GET    /api/health                    → Health check
+
+================================================================================
+END OF BUILD REPORT
+================================================================================

@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Athena V2 — Ewards Brand Theme
+   Primary:  #361963  (purple)  → HSL 264 60% 24%
+   Accent:   #FD8C27  (orange)  → HSL  28 98% 57%
+   Background: white
+*/
+@layer base {
+  :root {
+    --background:            0   0%  100%;
+    --foreground:          264  50%   8%;
+
+    --card:                  0   0%  100%;
+    --card-foreground:     264  50%   8%;
+
+    --popover:               0   0%  100%;
+    --popover-foreground:  264  50%   8%;
+
+    /* Brand purple */
+    --primary:             264  60%  24%;
+    --primary-foreground:    0   0% 100%;
+
+    /* Light purple tint — used for secondary buttons / badges */
+    --secondary:           264  30%  94%;
+    --secondary-foreground:264  60%  24%;
+
+    /* Faint purple mist — backgrounds, skeletons */
+    --muted:               264  20%  96%;
+    --muted-foreground:    264  12%  46%;
+
+    /* Brand orange — hover highlights, active indicators */
+    --accent:               28  98%  57%;
+    --accent-foreground:     0   0% 100%;
+
+    --destructive:           0  84%  60%;
+    --destructive-foreground:0   0% 100%;
+
+    --border:              264  15%  88%;
+    --input:               264  15%  88%;
+    --ring:                264  60%  24%;
+    --radius:              0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}

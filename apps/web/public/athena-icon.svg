@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" fill="#0f172a"/>
+  <!-- Stylized "A" for Athena -->
+  <g fill="none" stroke="#f8fafc" stroke-width="32" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Left leg of A -->
+    <line x1="256" y1="96" x2="112" y2="400"/>
+    <!-- Right leg of A -->
+    <line x1="256" y1="96" x2="400" y2="400"/>
+    <!-- Crossbar -->
+    <line x1="168" y1="288" x2="344" y2="288"/>
+  </g>
+  <!-- Gold accent dot at top -->
+  <circle cx="256" cy="96" r="16" fill="#f59e0b"/>
+</svg>
