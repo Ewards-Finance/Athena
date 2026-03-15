@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Athena V2 HRMS - Backend API",
   "main": "dist/index.js",
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
+  },
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
@@ -15,6 +18,8 @@
   },
   "dependencies": {
     "@prisma/client": "^5.10.2",
+    "@types/node-cron": "^3.0.11",
+    "@types/nodemailer": "^7.0.11",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.1",
@@ -22,6 +27,8 @@
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^8.0.2",
     "zod": "^3.22.4"
   },
   "devDependencies": {

@@ -29,7 +29,8 @@
       "Bash(cd \"C:\\\\Users\\\\mihik\\\\Desktop\\\\Python Projects\\\\Athena2.0\\\\apps\\\\api\" && PGPASSWORD=Ewards4321 psql -U postgres -d athena_db -c \"\\\\dt\" 2>&1)",
       "Bash(curl -s -X POST http://localhost:3001/api/auth/login -H \"Content-Type: application/json\" -d \"{\\\\\"email\\\\\":\\\\\"admin@ewards.com\\\\\",\\\\\"password\\\\\":\\\\\"Admin@123\\\\\"}\" 2>&1)",
       "Bash(cd \"C:\\\\Users\\\\mihik\\\\Desktop\\\\Python Projects\\\\Athena2.0\\\\apps\\\\web\" && npm list vite-plugin-pwa 2>&1)",
-      "Bash(cd \"C:\\\\Users\\\\mihik\\\\Desktop\\\\Python Projects\\\\Athena2.0\\\\apps\\\\web\" && npm run build 2>&1 | tail -20)"
+      "Bash(cd \"C:\\\\Users\\\\mihik\\\\Desktop\\\\Python Projects\\\\Athena2.0\\\\apps\\\\web\" && npm run build 2>&1 | tail -20)",
+      "Bash(grep:*)"
     ]
   },
   "hooks": {

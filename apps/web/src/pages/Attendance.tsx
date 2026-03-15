@@ -139,14 +139,29 @@ export default function Attendance() {
   const [editCheckIn, setEditCheckIn]         = useState('');
   const [savingCheckIn, setSavingCheckIn]     = useState(false);
 
+  // Absence auto-marking
+  const [showAbsenceModal, setShowAbsenceModal] = useState(false);
+  const [absFromDate, setAbsFromDate]           = useState('');
+  const [absToDate, setAbsToDate]               = useState('');
+  const [markingAbsences, setMarkingAbsences]   = useState(false);
+  const [absenceResult, setAbsenceResult]       = useState<string>('');
+
+  // Attendance adjustments
+  // Map of userId → adjustmentDays (draft, not yet saved)
+  const [adjustments, setAdjustments]         = useState<Record<string, number>>({});
+  const [adjustmentReasons, setAdjReasons]    = useState<Record<string, string>>({});
+  const [savingAdj, setSavingAdj]             = useState<Record<string, boolean>>({});
+  const [adjSaved, setAdjSaved]               = useState<Record<string, boolean>>({});
+
   const fetchSummary = async () => {
     setSummaryLoading(true);
     setSummaryError('');
     try {
-      const [sumRes, recRes, impRes] = await Promise.all([
+      const [sumRes, recRes, impRes, adjRes] = await Promise.all([
         api.get(`/attendance/summary?month=${month}&year=${year}`),
         api.get(`/attendance/records?month=${month}&year=${year}`),
         api.get('/attendance/imports'),
+        api.get(`/attendance/adjustments?month=${month}&year=${year}`),
       ]);
       setSummary(sumRes.data);
       setAllRecords(recRes.data);
@@ -158,6 +173,17 @@ export default function Attendance() {
       setExtDatesError('');
       setExpandedUserId(null);
       setPolicyError('');
+      // Load saved adjustments into state
+      const adjMap: Record<string, number> = {};
+      const reasonMap: Record<string, string> = {};
+      for (const a of adjRes.data) {
+        adjMap[a.userId]    = a.adjustmentDays;
+        reasonMap[a.userId] = a.reason ?? '';
+      }
+      setAdjustments(adjMap);
+      setAdjReasons(reasonMap);
+      setSavingAdj({});
+      setAdjSaved({});
     } catch {
       setSummaryError('Failed to load attendance data.');
     } finally {
@@ -278,6 +304,26 @@ export default function Attendance() {
       // silent
     } finally {
       setImportsLoading(false);
+    }
+  };
+
+  const saveAdjustment = async (userId: string) => {
+    setSavingAdj((p) => ({ ...p, [userId]: true }));
+    setAdjSaved((p) => ({ ...p, [userId]: false }));
+    try {
+      const days = adjustments[userId] ?? 0;
+      await api.put(`/attendance/adjustments/${userId}`, {
+        month,
+        year,
+        adjustmentDays: days,
+        reason: adjustmentReasons[userId] ?? '',
+      });
+      setAdjSaved((p) => ({ ...p, [userId]: true }));
+      setTimeout(() => setAdjSaved((p) => ({ ...p, [userId]: false })), 2000);
+    } catch {
+      // silently fail — user can retry
+    } finally {
+      setSavingAdj((p) => ({ ...p, [userId]: false }));
     }
   };
 
@@ -477,6 +523,110 @@ export default function Attendance() {
           </div>
 
           {summaryError && <p className="text-red-500 text-sm">{summaryError}</p>}
+
+          {/* Mark Absences button */}
+          <div className="flex justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => { setShowAbsenceModal(true); setAbsenceResult(''); setAbsFromDate(''); setAbsToDate(''); }}
+            >
+              Mark Absences
+            </Button>
+          </div>
+
+          {/* Attendance Adjustments Panel */}
+          {!summaryLoading && summary.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base" style={{ color: '#361963' }}>
+                  Attendance Adjustments
+                </CardTitle>
+                <p className="text-xs text-gray-500 mt-1">
+                  Correct attendance before payroll. <strong>+</strong> reduces LWP (employee worked more than recorded),
+                  <strong> −</strong> adds LWP. Applied automatically when the payroll run is created.
+                </p>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                        <th className="text-left px-4 py-2">Employee</th>
+                        <th className="text-left px-4 py-2">Department</th>
+                        <th className="text-center px-4 py-2 w-32">Adjustment (days)</th>
+                        <th className="text-left px-4 py-2">Reason (optional)</th>
+                        <th className="px-4 py-2 w-20"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {summary.map((row) => {
+                        const name = row.profile
+                          ? `${row.profile.firstName} ${row.profile.lastName}`
+                          : row.userId;
+                        const dept = row.profile?.department ?? '—';
+                        const days = adjustments[row.userId] ?? 0;
+                        const reason = adjustmentReasons[row.userId] ?? '';
+                        const saving = savingAdj[row.userId] ?? false;
+                        const saved  = adjSaved[row.userId]  ?? false;
+                        return (
+                          <tr key={row.userId} className="border-b last:border-0 hover:bg-gray-50">
+                            <td className="px-4 py-2 font-medium">
+                              {name}
+                              {row.profile?.employeeId && (
+                                <span className="ml-1 text-xs text-gray-400">({row.profile.employeeId})</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-2 text-gray-500">{dept}</td>
+                            <td className="px-4 py-2">
+                              <Input
+                                type="number"
+                                step="0.5"
+                                className="h-7 text-center w-24 mx-auto"
+                                value={days}
+                                onChange={(e) =>
+                                  setAdjustments((p) => ({ ...p, [row.userId]: parseFloat(e.target.value) || 0 }))
+                                }
+                              />
+                            </td>
+                            <td className="px-4 py-2">
+                              <Input
+                                type="text"
+                                placeholder="e.g. Fingerprint not working"
+                                className="h-7 text-sm"
+                                value={reason}
+                                onChange={(e) =>
+                                  setAdjReasons((p) => ({ ...p, [row.userId]: e.target.value }))
+                                }
+                              />
+                            </td>
+                            <td className="px-4 py-2 text-right">
+                              <Button
+                                size="sm"
+                                variant={saved ? 'outline' : 'default'}
+                                className="h-7 text-xs"
+                                style={saved ? {} : { backgroundColor: '#361963' }}
+                                disabled={saving}
+                                onClick={() => saveAdjustment(row.userId)}
+                              >
+                                {saving ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : saved ? (
+                                  <><Check className="h-3 w-3 mr-1 text-green-600" />Saved</>
+                                ) : (
+                                  'Save'
+                                )}
+                              </Button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Late Policy Card */}
           {!summaryLoading && (
@@ -1262,6 +1412,75 @@ export default function Attendance() {
               )}
             </CardContent>
           </Card>
+        </div>
+      )}
+
+      {/* ── Absence Auto-Mark Modal ── */}
+      {showAbsenceModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 space-y-4">
+            <div className="flex items-start justify-between">
+              <div>
+                <h2 className="text-base font-semibold" style={{ color: '#361963' }}>Mark Absences</h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Auto-marks employees with no punch and no approved leave as absent. Sundays and holidays are skipped.
+                </p>
+              </div>
+              <button className="text-gray-400 hover:text-gray-600" onClick={() => setShowAbsenceModal(false)}>✕</button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium mb-1">From Date</label>
+                <input
+                  type="date"
+                  className="w-full border rounded-md px-3 py-2 text-sm"
+                  value={absFromDate}
+                  onChange={(e) => setAbsFromDate(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">To Date</label>
+                <input
+                  type="date"
+                  className="w-full border rounded-md px-3 py-2 text-sm"
+                  value={absToDate}
+                  onChange={(e) => setAbsToDate(e.target.value)}
+                />
+              </div>
+            </div>
+
+            {absenceResult && (
+              <p className="text-sm bg-green-50 text-green-800 border border-green-200 rounded-md px-3 py-2">
+                {absenceResult}
+              </p>
+            )}
+
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" size="sm" onClick={() => setShowAbsenceModal(false)}>Cancel</Button>
+              <Button
+                size="sm"
+                disabled={!absFromDate || !absToDate || markingAbsences}
+                style={{ backgroundColor: '#361963' }}
+                className="text-white"
+                onClick={async () => {
+                  setMarkingAbsences(true);
+                  setAbsenceResult('');
+                  try {
+                    const r = await api.post('/attendance/mark-absences', { fromDate: absFromDate, toDate: absToDate });
+                    setAbsenceResult(r.data.message);
+                  } catch (err: any) {
+                    setAbsenceResult(err?.response?.data?.error ?? 'Failed to mark absences');
+                  } finally {
+                    setMarkingAbsences(false);
+                  }
+                }}
+              >
+                {markingAbsences ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                Run
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

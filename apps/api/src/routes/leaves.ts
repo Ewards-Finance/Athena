@@ -16,6 +16,10 @@ import { z }                        from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { getOrCreateBalances }      from './leaveBalance';
 import { createNotification }       from '../lib/notify';
+import { createAuditLog }           from '../lib/audit';
+import { getFYYear }                from '../lib/fyUtils';
+import { sendLeaveApprovedEmail, sendLeaveRejectedEmail } from '../lib/email';
+import { UNLIMITED_LEAVE_TYPES } from '../lib/payrollEngine';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -162,6 +166,28 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER']), async (req: AuthRequest, re
   }
 
   try {
+    // ── Overlap detection ─────────────────────────────────────────────────
+    const force = req.query.force === 'true';
+    if (!force) {
+      const overlapping = await prisma.leaveRequest.findMany({
+        where: {
+          employeeId: req.user!.id,
+          status:     { in: ['PENDING', 'APPROVED'] },
+          startDate:  { lte: end },
+          endDate:    { gte: start },
+        },
+        select: { id: true, leaveType: true, startDate: true, endDate: true, status: true },
+      });
+      if (overlapping.length > 0) {
+        res.status(200).json({
+          warning:          true,
+          message:          'You already have a leave request that overlaps with the selected dates. Submit again to confirm.',
+          conflictingLeaves: overlapping,
+        });
+        return;
+      }
+    }
+
     // Find the employee's reporting manager from their profile
     const profile = await prisma.profile.findUnique({
       where:  { userId: req.user!.id },
@@ -216,7 +242,16 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
   const { comment } = req.body;
 
   try {
-    const leave = await prisma.leaveRequest.findUnique({ where: { id } });
+    const leave = await prisma.leaveRequest.findUnique({
+      where: { id },
+      include: {
+        employee: {
+          select: {
+            profile: { select: { firstName: true, lastName: true, employeeId: true } },
+          },
+        },
+      },
+    });
     if (!leave) {
       res.status(404).json({ error: 'Leave request not found' });
       return;
@@ -233,11 +268,13 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
       return;
     }
 
-    const year = new Date(leave.startDate).getFullYear();
+    const year = getFYYear(new Date(leave.startDate));
+    const isUnlimited = (UNLIMITED_LEAVE_TYPES as readonly string[]).includes(leave.leaveType);
 
-    // Ensure balance row exists, then increment used
-    await getOrCreateBalances(leave.employeeId, year);
-    const [updated] = await prisma.$transaction([
+    // Ensure balance row exists (for non-unlimited types), then approve
+    if (!isUnlimited) await getOrCreateBalances(leave.employeeId, year);
+
+    const approveOps: any[] = [
       prisma.leaveRequest.update({
         where: { id },
         data: {
@@ -247,11 +284,38 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
           approvedAt:     new Date(),
         },
       }),
-      prisma.leaveBalance.updateMany({
-        where: { userId: leave.employeeId, year, leaveType: leave.leaveType },
-        data:  { used: { increment: leave.totalDays } },
-      }),
-    ]);
+    ];
+    // Only deduct balance for types that have a balance (not TEMPORARY_WFH / TRAVELLING)
+    if (!isUnlimited) {
+      approveOps.push(
+        prisma.leaveBalance.updateMany({
+          where: { userId: leave.employeeId, year, leaveType: leave.leaveType },
+          data:  { used: { increment: leave.totalDays } },
+        })
+      );
+    }
+    const [updated] = await prisma.$transaction(approveOps);
+
+    // Audit log
+    await createAuditLog({
+      actorId:   req.user!.id,
+      action:    'LEAVE_APPROVED',
+      entity:    'LeaveRequest',
+      entityId:  id,
+      subjectEntity: 'User',
+      subjectId: leave.employeeId,
+      subjectLabel: leave.employee?.profile
+        ? `${leave.employee.profile.firstName} ${leave.employee.profile.lastName} (${leave.employee.profile.employeeId})`
+        : leave.employeeId,
+      subjectMeta: {
+        leaveType: leave.leaveType,
+        totalDays: leave.totalDays,
+        startDate: leave.startDate,
+        endDate: leave.endDate,
+      },
+      oldValues: { status: 'PENDING' },
+      newValues: { status: 'APPROVED', comment: comment || 'Approved' },
+    });
 
     // Notify the employee their leave was approved
     const approvedDaysStr = leave.totalDays === 0.5 ? 'half day' : `${leave.totalDays} day${leave.totalDays !== 1 ? 's' : ''}`;
@@ -262,6 +326,19 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
       message: `Your ${leave.leaveType} leave request (${approvedDaysStr}) has been approved.`,
       link:    '/leaves',
     });
+
+    // Email (fire and forget)
+    if (leave.employee?.email) {
+      sendLeaveApprovedEmail({
+        to:        leave.employee.email,
+        firstName: leave.employee.profile?.firstName ?? 'Employee',
+        leaveType: leave.leaveType,
+        startDate: new Date(leave.startDate).toDateString(),
+        endDate:   new Date(leave.endDate).toDateString(),
+        totalDays: leave.totalDays,
+        comment:   comment || undefined,
+      }).catch(() => {});
+    }
 
     res.json(updated);
   } catch (err) {
@@ -276,7 +353,17 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
   const { comment } = req.body;
 
   try {
-    const leave = await prisma.leaveRequest.findUnique({ where: { id } });
+    const leave = await prisma.leaveRequest.findUnique({
+      where: { id },
+      include: {
+        employee: {
+          select: {
+            email:   true,
+            profile: { select: { firstName: true, lastName: true, employeeId: true } },
+          },
+        },
+      },
+    });
     if (!leave) {
       res.status(404).json({ error: 'Leave request not found' });
       return;
@@ -309,6 +396,40 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
       title:   'Leave Rejected',
       message: `Your ${leave.leaveType} leave request (${leave.totalDays} day${leave.totalDays !== 1 ? 's' : ''}) has been rejected.${comment ? ` Reason: ${comment}` : ''}`,
       link:    '/leaves',
+    });
+
+    // Email (fire and forget)
+    if (leave.employee?.email) {
+      sendLeaveRejectedEmail({
+        to:        leave.employee.email,
+        firstName: leave.employee.profile?.firstName ?? 'Employee',
+        leaveType: leave.leaveType,
+        startDate: new Date(leave.startDate).toDateString(),
+        endDate:   new Date(leave.endDate).toDateString(),
+        totalDays: leave.totalDays,
+        comment:   comment || undefined,
+      }).catch(() => {});
+    }
+
+    // Audit log
+    await createAuditLog({
+      actorId:   req.user!.id,
+      action:    'LEAVE_REJECTED',
+      entity:    'LeaveRequest',
+      entityId:  id,
+      subjectEntity: 'User',
+      subjectId: leave.employeeId,
+      subjectLabel: leave.employee?.profile
+        ? `${leave.employee.profile.firstName} ${leave.employee.profile.lastName} (${leave.employee.profile.employeeId})`
+        : leave.employeeId,
+      subjectMeta: {
+        leaveType: leave.leaveType,
+        totalDays: leave.totalDays,
+        startDate: leave.startDate,
+        endDate: leave.endDate,
+      },
+      oldValues: { status: 'PENDING' },
+      newValues: { status: 'REJECTED', comment: comment || 'Rejected' },
     });
 
     res.json(updated);
@@ -393,9 +514,10 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
       }),
     ];
 
-    // If it was already APPROVED, decrement the used balance
-    if (leave.status === 'APPROVED') {
-      const year = new Date(leave.startDate).getFullYear();
+    // If it was already APPROVED, decrement the used balance (not for unlimited types)
+    const isUnlimited = (UNLIMITED_LEAVE_TYPES as readonly string[]).includes(leave.leaveType);
+    if (leave.status === 'APPROVED' && !isUnlimited) {
+      const year = getFYYear(new Date(leave.startDate));
       ops.push(
         prisma.leaveBalance.updateMany({
           where: { userId: leave.employeeId, year, leaveType: leave.leaveType },

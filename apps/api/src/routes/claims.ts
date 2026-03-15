@@ -14,6 +14,7 @@ import { PrismaClient }              from '@prisma/client';
 import { z }                         from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { createNotifications, createNotification } from '../lib/notify';
+import { sendClaimStatusEmail } from '../lib/email';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -109,6 +110,12 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
       return;
     }
 
+    // Cannot approve your own claim
+    if (claim.employeeId === req.user!.id) {
+      res.status(403).json({ error: 'You cannot approve your own claim' });
+      return;
+    }
+
     // Admin's claims can only be approved by another Admin
     const submitter = await prisma.user.findUnique({ where: { id: claim.employeeId }, select: { role: true } });
     if (submitter?.role === 'ADMIN' && req.user!.role !== 'ADMIN') {
@@ -128,6 +135,11 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
       message: `Your ${claim.category} claim for ₹${claim.amount} has been approved.`,
       link:    '/claims',
     });
+
+    // Email (fire and forget)
+    prisma.user.findUnique({ where: { id: claim.employeeId }, select: { email: true, profile: { select: { firstName: true } } } })
+      .then((u) => { if (u?.email) sendClaimStatusEmail({ to: u.email, firstName: u.profile?.firstName ?? 'Employee', category: claim.category, amount: claim.amount, status: 'APPROVED' }).catch(() => {}); })
+      .catch(() => {});
 
     res.json(updated);
   } catch (err) {
@@ -160,6 +172,11 @@ router.patch('/:id/pay', authorize(['ADMIN']), async (req: AuthRequest, res: Res
       link:    '/claims',
     });
 
+    // Email (fire and forget)
+    prisma.user.findUnique({ where: { id: claim.employeeId }, select: { email: true, profile: { select: { firstName: true } } } })
+      .then((u) => { if (u?.email) sendClaimStatusEmail({ to: u.email, firstName: u.profile?.firstName ?? 'Employee', category: claim.category, amount: claim.amount, status: 'PAID', note: note || undefined }).catch(() => {}); })
+      .catch(() => {});
+
     res.json(updated);
   } catch (err) {
     console.error('Pay claim error:', err);
@@ -175,6 +192,12 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
     if (!claim) { res.status(404).json({ error: 'Claim not found' }); return; }
     if (claim.status !== 'PENDING') {
       res.status(400).json({ error: `Claim is already ${claim.status}` });
+      return;
+    }
+
+    // Cannot reject your own claim
+    if (claim.employeeId === req.user!.id) {
+      res.status(403).json({ error: 'You cannot reject your own claim' });
       return;
     }
 
@@ -197,6 +220,11 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
       message: `Your ${claim.category} claim for ₹${claim.amount} has been rejected.`,
       link:    '/claims',
     });
+
+    // Email (fire and forget)
+    prisma.user.findUnique({ where: { id: claim.employeeId }, select: { email: true, profile: { select: { firstName: true } } } })
+      .then((u) => { if (u?.email) sendClaimStatusEmail({ to: u.email, firstName: u.profile?.firstName ?? 'Employee', category: claim.category, amount: claim.amount, status: 'REJECTED' }).catch(() => {}); })
+      .catch(() => {});
 
     res.json(updated);
   } catch (err) {

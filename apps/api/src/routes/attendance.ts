@@ -22,6 +22,7 @@ import { PrismaClient }        from '@prisma/client';
 import { z }                   from 'zod';
 import multer                  from 'multer';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
+import { createAuditLog }      from '../lib/audit';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -497,8 +498,16 @@ router.post('/imports/:id/apply-late-policy', authorize(['ADMIN']), async (req: 
   }
   const { arrivalTime } = parsed.data;
   const [arrHour, arrMin] = arrivalTime.split(':').map(Number);
-  const HALF_DAY_HOUR = 14; // 2:30 PM cutoff for first-half leave employees
-  const HALF_DAY_MIN  = 30;
+
+  // Read configurable settings (fall back to hardcoded defaults if not in DB)
+  const settingRows = await prisma.systemSetting.findMany({
+    where: { key: { in: ['half_day_cutoff_time', 'late_warning_threshold'] } },
+  });
+  const settingMap = Object.fromEntries(settingRows.map((s) => [s.key, s.value]));
+  const halfDayTime = (settingMap['half_day_cutoff_time'] || '14:30').split(':').map(Number);
+  const HALF_DAY_HOUR = halfDayTime[0];
+  const HALF_DAY_MIN  = halfDayTime[1];
+  const LATE_FREE_COUNT = parseInt(settingMap['late_warning_threshold'] || '3', 10);
 
   try {
     const importBatch = await prisma.attendanceImport.findUnique({
@@ -510,9 +519,11 @@ router.post('/imports/:id/apply-late-policy', authorize(['ADMIN']), async (req: 
       return;
     }
 
-    // Extension dates: fixed 11:00 AM cutoff (first-half-off employees are excluded entirely)
-    const EXTENSION_HOUR = 11;
-    const EXTENSION_MIN  = 0;
+    // Extension dates: cutoff from settings (default 11:00 AM)
+    const extSettingRow = await prisma.systemSetting.findUnique({ where: { key: 'extension_arrival_time' } });
+    const extTimeParts  = (extSettingRow?.value || '11:00').split(':').map(Number);
+    const EXTENSION_HOUR = extTimeParts[0];
+    const EXTENSION_MIN  = extTimeParts[1];
     const extensionDateSet = new Set<string>(
       (importBatch.extensionDates as string[] ?? [])
     );
@@ -583,7 +594,8 @@ router.post('/imports/:id/apply-late-policy', authorize(['ADMIN']), async (req: 
       withLate.push({ id: record.id, userId: record.userId, isLate });
     }
 
-    // Assign LWP deductions: first 3 lates per employee = 0, 4th onwards = 0.5 each
+    // Assign LWP deductions: first N lates per employee = 0, (N+1)th onwards = 0.5 each
+    // N is controlled by late_warning_threshold setting (default 3)
     const runningLate = new Map<string, number>();
     const finalUpdates: Array<{ id: string; isLate: boolean; lwpDeduction: number }> = [];
     for (const r of withLate) {
@@ -591,7 +603,7 @@ router.post('/imports/:id/apply-late-policy', authorize(['ADMIN']), async (req: 
       if (r.isLate) {
         const count = (runningLate.get(r.userId) ?? 0) + 1;
         runningLate.set(r.userId, count);
-        if (count > 3) lwpDeduction = 0.5;
+        if (count > LATE_FREE_COUNT) lwpDeduction = 0.5;
       }
       finalUpdates.push({ id: r.id, isLate: r.isLate, lwpDeduction });
     }
@@ -631,7 +643,14 @@ router.put('/records/:id', authorize(['ADMIN']), async (req: AuthRequest, res: R
   try {
     const record = await prisma.attendanceRecord.findUnique({
       where:   { id: req.params.id },
-      include: { import: { select: { month: true, year: true } } },
+      include: {
+        import: { select: { month: true, year: true } },
+        user: {
+          select: {
+            profile: { select: { firstName: true, lastName: true, employeeId: true } },
+          },
+        },
+      },
     });
     if (!record) { res.status(404).json({ error: 'Record not found' }); return; }
 
@@ -657,10 +676,257 @@ router.put('/records/:id', authorize(['ADMIN']), async (req: AuthRequest, res: R
       where: { id: record.importId },
       data:  { arrivalTime: null },
     });
+
+    await createAuditLog({
+      actorId:   req.user!.id,
+      action:    'ATTENDANCE_CORRECTED',
+      entity:    'AttendanceRecord',
+      entityId:  req.params.id,
+      subjectEntity: 'User',
+      subjectId: record.userId,
+      subjectLabel: record.user?.profile
+        ? `${record.user.profile.firstName} ${record.user.profile.lastName} (${record.user.profile.employeeId})`
+        : record.userId,
+      subjectMeta: {
+        employeeId: record.user?.profile?.employeeId,
+        attendanceDate: record.date,
+      },
+      oldValues: { checkInManual: record.checkInManual },
+      newValues: { checkInManual: parsed.data.checkInManual },
+    });
+
     res.json(updated);
   } catch (err: any) {
     if (err?.code === 'P2025') { res.status(404).json({ error: 'Record not found' }); return; }
     console.error('Update record check-in error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ─── Absence Auto-Marking ─────────────────────────────────────────────────────
+
+/**
+ * POST /api/attendance/mark-absences
+ * Body: { fromDate: "YYYY-MM-DD", toDate: "YYYY-MM-DD" }
+ * For each working day in the range:
+ *   - Skip Sundays
+ *   - Skip holidays
+ *   - For each active employee with no attendance record AND no approved leave → create AbsenceRecord
+ * Returns summary of how many absence records were created.
+ */
+router.post('/mark-absences', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  const parsed = z.object({
+    fromDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    toDate:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'fromDate and toDate required in YYYY-MM-DD format' });
+    return;
+  }
+
+  const from = new Date(parsed.data.fromDate + 'T00:00:00.000Z');
+  const to   = new Date(parsed.data.toDate   + 'T00:00:00.000Z');
+  if (to < from) {
+    res.status(400).json({ error: 'toDate must be >= fromDate' });
+    return;
+  }
+  // Limit to 31 days to prevent abuse
+  const diffDays = Math.round((to.getTime() - from.getTime()) / (24 * 3600 * 1000)) + 1;
+  if (diffDays > 31) {
+    res.status(400).json({ error: 'Date range cannot exceed 31 days' });
+    return;
+  }
+
+  try {
+    // Load holidays in range
+    const holidays = await prisma.holiday.findMany({
+      where: { date: { gte: from, lte: new Date(to.getTime() + 86400000) } },
+      select: { date: true },
+    });
+    const holidaySet = new Set(holidays.map((h) => h.date.toISOString().slice(0, 10)));
+
+    // Load active employees
+    const activeUsers = await prisma.user.findMany({
+      where:  { isActive: true },
+      select: { id: true },
+    });
+
+    // Collect all dates to process (skip Sundays and holidays)
+    const workingDates: Date[] = [];
+    const cursor = new Date(from);
+    while (cursor <= to) {
+      const dow     = cursor.getUTCDay();   // 0 = Sunday, 6 = Saturday
+      const dateStr = cursor.toISOString().slice(0, 10);
+      // Skip Sundays and Saturdays: Saturday compliance is handled separately
+      // via the Saturday worklog/fingerprint policy at payroll run time.
+      // Skip holidays too.
+      if (dow !== 0 && dow !== 6 && !holidaySet.has(dateStr)) {
+        workingDates.push(new Date(cursor));
+      }
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+
+    if (workingDates.length === 0) {
+      res.json({ message: 'No working days in the selected range', created: 0 });
+      return;
+    }
+
+    // Load existing attendance records for the range
+    const existingRecords = await prisma.attendanceRecord.findMany({
+      where: { date: { gte: from, lte: to } },
+      select: { userId: true, date: true },
+    });
+    const attendanceSet = new Set(existingRecords.map((r) => `${r.userId}_${r.date.toISOString().slice(0, 10)}`));
+
+    // Load existing absence records for the range (avoid duplicates)
+    const existingAbsences = await prisma.absenceRecord.findMany({
+      where: { date: { gte: from, lte: to } },
+      select: { userId: true, date: true },
+    });
+    const absenceSet = new Set(existingAbsences.map((r) => `${r.userId}_${r.date.toISOString().slice(0, 10)}`));
+
+    // Load approved leaves in range
+    const approvedLeaves = await prisma.leaveRequest.findMany({
+      where: {
+        status:    'APPROVED',
+        startDate: { lte: to },
+        endDate:   { gte: from },
+      },
+      select: { employeeId: true, startDate: true, endDate: true },
+    });
+
+    // Build a Set of "userId_YYYY-MM-DD" for approved leave days
+    const leaveSet = new Set<string>();
+    for (const l of approvedLeaves) {
+      const lStart = new Date(l.startDate);
+      const lEnd   = new Date(l.endDate);
+      const lCursor = new Date(lStart);
+      while (lCursor <= lEnd) {
+        leaveSet.add(`${l.employeeId}_${lCursor.toISOString().slice(0, 10)}`);
+        lCursor.setUTCDate(lCursor.getUTCDate() + 1);
+      }
+    }
+
+    // Create absence records
+    const toCreate: { userId: string; date: Date; markedBy: string }[] = [];
+    for (const date of workingDates) {
+      const dateStr = date.toISOString().slice(0, 10);
+      for (const user of activeUsers) {
+        const key = `${user.id}_${dateStr}`;
+        if (!attendanceSet.has(key) && !leaveSet.has(key) && !absenceSet.has(key)) {
+          toCreate.push({ userId: user.id, date, markedBy: req.user!.id });
+        }
+      }
+    }
+
+    if (toCreate.length > 0) {
+      await prisma.absenceRecord.createMany({ data: toCreate, skipDuplicates: true });
+    }
+
+    res.json({
+      message:      `Absence marking complete. ${toCreate.length} absence record(s) created.`,
+      created:      toCreate.length,
+      workingDays:  workingDates.length,
+      employees:    activeUsers.length,
+    });
+  } catch (err) {
+    console.error('Mark absences error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ─── Attendance Adjustments ───────────────────────────────────────────────────
+
+// GET /api/attendance/adjustments?month=&year= — get all adjustments for a month (Admin)
+router.get('/adjustments', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  const parsed = z.object({
+    month: z.coerce.number().int().min(1).max(12),
+    year:  z.coerce.number().int().min(2020).max(2100),
+  }).safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Valid month and year required' });
+    return;
+  }
+  try {
+    const adjustments = await prisma.attendanceAdjustment.findMany({
+      where: { month: parsed.data.month, year: parsed.data.year },
+    });
+    res.json(adjustments);
+  } catch (err) {
+    console.error('Get adjustments error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// PUT /api/attendance/adjustments/:userId — set/update adjustment for employee+month (Admin)
+router.put('/adjustments/:userId', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  const { userId } = req.params;
+  const parsed = z.object({
+    month:          z.number().int().min(1).max(12),
+    year:           z.number().int().min(2020).max(2100),
+    adjustmentDays: z.number(),
+    reason:         z.string().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
+    return;
+  }
+
+  const { month, year, adjustmentDays, reason } = parsed.data;
+
+  // If adjustmentDays is 0, delete the record (clean up)
+  if (adjustmentDays === 0) {
+    try {
+      await prisma.attendanceAdjustment.deleteMany({ where: { userId, month, year } });
+      res.json({ message: 'Adjustment cleared' });
+    } catch (err) {
+      console.error('Clear adjustment error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+    return;
+  }
+
+  try {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) { res.status(404).json({ error: 'Employee not found' }); return; }
+
+    const adj = await prisma.attendanceAdjustment.upsert({
+      where:  { userId_month_year: { userId, month, year } },
+      update: { adjustmentDays, reason: reason ?? null, createdBy: req.user!.id },
+      create: { userId, month, year, adjustmentDays, reason: reason ?? null, createdBy: req.user!.id },
+    });
+    res.json(adj);
+  } catch (err) {
+    console.error('Set adjustment error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/attendance/absences?month=&year= — list absence records for a month (Admin)
+router.get('/absences', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  const parsed = z.object({
+    month: z.coerce.number().int().min(1).max(12),
+    year:  z.coerce.number().int().min(2020).max(2100),
+  }).safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Valid month and year required' });
+    return;
+  }
+  const { month, year } = parsed.data;
+  const startOfMonth = new Date(Date.UTC(year, month - 1, 1));
+  const endOfMonth   = new Date(Date.UTC(year, month, 0, 23, 59, 59));
+
+  try {
+    const absences = await prisma.absenceRecord.findMany({
+      where: { date: { gte: startOfMonth, lte: endOfMonth } },
+      include: {
+        user: { select: { profile: { select: { firstName: true, lastName: true, employeeId: true, department: true } } } },
+      },
+      orderBy: [{ date: 'asc' }, { user: { profile: { employeeId: 'asc' } } }],
+    });
+    res.json(absences);
+  } catch (err) {
+    console.error('Get absences error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

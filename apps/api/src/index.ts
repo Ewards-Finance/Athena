@@ -26,6 +26,18 @@ import notificationRoutes  from './routes/notifications';
 import payrollRoutes        from './routes/payroll';
 import attendanceRoutes     from './routes/attendance';
 import worklogRoutes        from './routes/worklogs';
+import auditLogRoutes        from './routes/auditLogs';
+import settingsRoutes         from './routes/settings';
+import salaryRevisionRoutes   from './routes/salaryRevisions';
+import reportsRoutes          from './routes/reports';
+import documentsRoutes        from './routes/documents';
+import apiKeysRoutes          from './routes/apiKeys';
+import backupsRoutes          from './routes/backups';
+import integrationsRoutes     from './routes/integrations';
+import dailyAttendanceRoutes  from './routes/dailyAttendance';
+import searchRoutes           from './routes/search';
+import cron                   from 'node-cron';
+import { runBackup, isBackupConfigured } from './lib/backup';
 
 const app  = express();
 const PORT = process.env.PORT || 3001;
@@ -64,6 +76,16 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/payroll',       payrollRoutes);
 app.use('/api/attendance',    attendanceRoutes);
 app.use('/api/worklogs',     worklogRoutes);
+app.use('/api/audit-logs',        auditLogRoutes);
+app.use('/api/settings',          settingsRoutes);
+app.use('/api/salary-revisions',  salaryRevisionRoutes);
+app.use('/api/reports',           reportsRoutes);
+app.use('/api/documents',         documentsRoutes);
+app.use('/api/api-keys',          apiKeysRoutes);
+app.use('/api/backups',           backupsRoutes);
+app.use('/api/v1',                integrationsRoutes);
+app.use('/api/daily-attendance',  dailyAttendanceRoutes);
+app.use('/api/search',            searchRoutes);
 
 // --- Health check ---
 app.get('/api/health', (_req, res) => {
@@ -79,6 +101,20 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 app.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`🚀 Athena API running on http://localhost:${PORT}`);
   console.log(`🌐 Network access: http://192.168.1.163:${PORT}`);
+
+  // ── Scheduled DB Backup ──────────────────────────────────────────────────
+  // Default: daily at 2:00 AM. Override with BACKUP_CRON env var.
+  // e.g. BACKUP_CRON="0 3 * * *" for 3 AM.
+  if (isBackupConfigured()) {
+    const schedule = process.env.BACKUP_CRON ?? '0 2 * * *';
+    cron.schedule(schedule, () => {
+      console.log('[backup] Running scheduled backup...');
+      runBackup('SCHEDULED').catch((err) => console.error('[backup] Scheduled backup failed:', err));
+    });
+    console.log(`💾 Backup scheduler active (${schedule})`);
+  } else {
+    console.log('💾 Backup not configured (set BACKUP_GITHUB_* in .env to enable)');
+  }
 });
 
 export default app;

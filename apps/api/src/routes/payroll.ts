@@ -29,8 +29,11 @@ import { Router, Response }          from 'express';
 import { PrismaClient }              from '@prisma/client';
 import { z }                         from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
-import { computePayslipEntry, countWorkingDays, ComponentSnapshot } from '../lib/payrollEngine';
+import { computePayslipEntry, countWorkingDays, ComponentSnapshot, SATURDAY_FREE_OFF, UNLIMITED_LEAVE_TYPES } from '../lib/payrollEngine';
 import { generatePayrollExcel } from '../lib/excelExport';
+import { sendPayslipReadyEmail } from '../lib/email';
+
+const MONTH_NAMES = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -58,7 +61,7 @@ router.get('/components', async (_req: AuthRequest, res: Response) => {
 const componentSchema = z.object({
   name:     z.string().min(1).max(50),
   type:     z.enum(['EARNING', 'DEDUCTION']),
-  calcType: z.enum(['PERCENTAGE_OF_CTC', 'FIXED', 'MANUAL', 'AUTO_PT']),
+  calcType: z.enum(['PERCENTAGE_OF_CTC', 'FIXED', 'MANUAL', 'AUTO_PT', 'AUTO_TDS']),
   value:    z.number().min(0).default(0),
   order:    z.number().int().min(0).optional(),
 });
@@ -318,8 +321,19 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
       }
     }
 
-    // ── Worklog WFH compliance penalty ─────────────────────────────────────
-    // Count Saturdays in the month
+    // ── Saturday working policy + declared WFH compliance ──────────────────
+    // See payrollEngine.ts → SATURDAY POLICY comment for full explanation.
+    //
+    // A Saturday counts as "worked" if the employee has:
+    //   (a) an APPROVED worklog on that date, OR
+    //   (b) a fingerprint attendance record on that date (office Saturday)
+    //
+    // Penalty = max(0, required_worked_saturdays − actual_worked_saturdays)
+    // required = total_saturdays − SATURDAY_FREE_OFF[employmentType]
+    //   FULL_TIME free_off = 3  (2 off days + 1 office day, no worklog needed)
+    //   INTERN    free_off = 2  (1 off day  + 1 office day, no worklog needed)
+
+    // Collect all Saturdays in the month
     const saturdayDates: Date[] = [];
     {
       const d = new Date(Date.UTC(year, month - 1, 1));
@@ -329,7 +343,7 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
       }
     }
 
-    // Get declared WFH days this month
+    // Declared WFH days (company-wide WFH mandate — worklog required for everyone)
     const declaredWFHDays = await (prisma as any).declaredWFH.findMany({
       where:  { date: { gte: monthStart, lte: monthEnd } },
       select: { date: true },
@@ -338,15 +352,18 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
       declaredWFHDays.map((d: any) => new Date(d.date).toISOString().slice(0, 10))
     );
 
-    // Saturdays not already covered by declared WFH (avoid double-counting)
-    const freeSaturdays = saturdayDates.filter(
+    // Regular Saturdays (not covered by a declared WFH)
+    const regularSaturdays = saturdayDates.filter(
       (s) => !declaredWFHDateStrings.has(s.toISOString().slice(0, 10))
     );
 
-    // Fetch all APPROVED worklogs this month
+    // Approved worklogs this month (for all employees in run)
     const allWorklogs = await prisma.workLog.findMany({
-      where:  { date: { gte: monthStart, lte: monthEnd }, status: 'APPROVED',
-                userId: { in: employees.map((e) => e.userId) } },
+      where:  {
+        date:   { gte: monthStart, lte: monthEnd },
+        status: 'APPROVED',
+        userId: { in: employees.map((e) => e.userId) },
+      },
       select: { userId: true, date: true },
     });
     const worklogDatesMap: Record<string, Set<string>> = {};
@@ -355,26 +372,93 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
       worklogDatesMap[w.userId].add(new Date(w.date).toISOString().slice(0, 10));
     }
 
-    // Per-employee worklog LWP
-    for (const emp of employees) {
-      const logs    = worklogDatesMap[emp.userId] ?? new Set<string>();
-      const isIntern = emp.employmentType === 'INTERN';
-      const freeOff  = isIntern ? 2 : 3;
-      const requiredSatWorklogs    = Math.max(0, freeSaturdays.length - freeOff);
-      const submittedSatWorklogs   = freeSaturdays.filter(
-        (s) => logs.has(s.toISOString().slice(0, 10))
-      ).length;
-      const satPenalty             = Math.max(0, requiredSatWorklogs - submittedSatWorklogs);
+    // Fingerprint attendance records this month (office Saturday detection)
+    const allAttRecords = await prisma.attendanceRecord.findMany({
+      where:  {
+        date:   { gte: monthStart, lte: monthEnd },
+        userId: { in: employees.map((e) => e.userId) },
+      },
+      select: { userId: true, date: true },
+    });
+    const attendanceDatesMap: Record<string, Set<string>> = {};
+    for (const a of allAttRecords) {
+      if (!attendanceDatesMap[a.userId]) attendanceDatesMap[a.userId] = new Set();
+      attendanceDatesMap[a.userId].add(new Date(a.date).toISOString().slice(0, 10));
+    }
 
+    // Per-employee Saturday + declared WFH penalty
+    for (const emp of employees) {
+      const worklogs    = worklogDatesMap[emp.userId]    ?? new Set<string>();
+      const attendance  = attendanceDatesMap[emp.userId] ?? new Set<string>();
+      const empType     = (emp.employmentType === 'INTERN' ? 'INTERN' : 'FULL_TIME') as 'FULL_TIME' | 'INTERN';
+      const freeOff     = SATURDAY_FREE_OFF[empType];
+
+      // A Saturday is "worked" if employee has a worklog OR a fingerprint record
+      const workedRegularSats = regularSaturdays.filter((s) => {
+        const ds = s.toISOString().slice(0, 10);
+        return worklogs.has(ds) || attendance.has(ds);
+      }).length;
+
+      const requiredSats = Math.max(0, regularSaturdays.length - freeOff);
+      const satPenalty   = Math.max(0, requiredSats - workedRegularSats);
+
+      // Declared WFH penalty: worklog only (no fingerprint expected on WFH days)
       let declaredPenalty = 0;
       for (const dateStr of declaredWFHDateStrings) {
-        if (!logs.has(dateStr)) declaredPenalty++;
+        if (!worklogs.has(dateStr)) declaredPenalty++;
       }
 
       const total = satPenalty + declaredPenalty;
       if (total > 0) lwpByUser[emp.userId] = (lwpByUser[emp.userId] ?? 0) + total;
     }
-    // ── End worklog penalty ────────────────────────────────────────────────
+    // ── End Saturday / WFH penalty ─────────────────────────────────────────
+
+    // ── Travelling: auto-present (reduce LWP by approved TRAVELLING days) ──
+    // Employees on approved TRAVELLING leave are treated as present regardless
+    // of fingerprint absence. Subtract their approved travelling days from LWP.
+    const travellingLeaves = await prisma.leaveRequest.findMany({
+      where: {
+        leaveType: 'TRAVELLING',
+        status:    'APPROVED',
+        startDate: { lte: monthEnd },
+        endDate:   { gte: monthStart },
+      },
+      select: { employeeId: true, totalDays: true },
+    });
+    for (const l of travellingLeaves) {
+      const current = lwpByUser[l.employeeId] ?? 0;
+      lwpByUser[l.employeeId] = Math.max(0, current - l.totalDays);
+    }
+
+    // ── Temporary WFH: 30% daily deduction ─────────────────────────────────
+    // Employees on approved TEMPORARY_WFH are present (no LWP), but get a
+    // 30% deduction on those days. Compute wfhDays per employee here and
+    // pass to computePayslipEntry which applies the deduction.
+    const wfhLeaves = await prisma.leaveRequest.findMany({
+      where: {
+        leaveType: 'TEMPORARY_WFH',
+        status:    'APPROVED',
+        startDate: { lte: monthEnd },
+        endDate:   { gte: monthStart },
+      },
+      select: { employeeId: true, totalDays: true },
+    });
+    const wfhByUser: Record<string, number> = {};
+    for (const l of wfhLeaves) {
+      wfhByUser[l.employeeId] = (wfhByUser[l.employeeId] ?? 0) + l.totalDays;
+    }
+
+    // ── Attendance Adjustments (HR Admin manual override) ──────────────────
+    // HR Admin can set a +/- adjustment per employee per month in the Attendance
+    // page before running payroll. Positive = reduce LWP, Negative = add LWP.
+    const adjustments = await prisma.attendanceAdjustment.findMany({
+      where: { month, year },
+    });
+    for (const adj of adjustments) {
+      const current = lwpByUser[adj.userId] ?? 0;
+      lwpByUser[adj.userId] = Math.max(0, current - adj.adjustmentDays);
+    }
+    // ── End adjustments ────────────────────────────────────────────────────
 
     const compSnaps: ComponentSnapshot[] = components.map((c) => ({
       name:     c.name,
@@ -393,11 +477,13 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
         processedBy: req.user!.id,
         entries: {
           create: employees.map((emp) => {
-            const monthlyCtc    = r2((emp.annualCtc ?? 0) / 12);
+            const annualCtc      = emp.annualCtc ?? 0;
+            const monthlyCtc    = r2(annualCtc / 12);
             const reimbursements = reimbByUser[emp.userId] ?? 0;
-            const lwpDays        = Math.min(lwpByUser[emp.userId] ?? 0, workingDays);
-            const computed       = computePayslipEntry({
-              monthlyCtc, workingDays, lwpDays, components: compSnaps, reimbursements,
+            const lwpDays  = Math.min(lwpByUser[emp.userId] ?? 0, workingDays);
+            const wfhDays  = Math.min(wfhByUser[emp.userId] ?? 0, workingDays);
+            const computed = computePayslipEntry({
+              monthlyCtc, annualCtc, workingDays, lwpDays, wfhDays, components: compSnaps, reimbursements,
             });
             return {
               userId:         emp.userId,
@@ -489,6 +575,13 @@ router.patch('/runs/:id/entries/:entryId', authorize(['ADMIN']), async (req: Aut
     const entry = await prisma.payslipEntry.findUnique({ where: { id: req.params.entryId } });
     if (!entry) { res.status(404).json({ error: 'Entry not found' }); return; }
 
+    // Fetch actual annualCtc from profile for accurate TDS calculation
+    const profile = await prisma.profile.findUnique({
+      where:  { userId: entry.userId },
+      select: { annualCtc: true },
+    });
+    const actualAnnualCtc = profile?.annualCtc ?? entry.monthlyCtc * 12;
+
     // Merge incoming manual values into existing earnings/deductions
     const existingEarnings   = entry.earnings   as Record<string, number>;
     const existingDeductions = entry.deductions  as Record<string, number>;
@@ -509,12 +602,13 @@ router.patch('/runs/:id/entries/:entryId', authorize(['ADMIN']), async (req: Aut
     }));
 
     const recomputed = computePayslipEntry({
-      monthlyCtc:        entry.monthlyCtc,
-      workingDays:       entry.workingDays,
-      lwpDays:           entry.lwpDays,
-      components:        compSnaps,
-      reimbursements:    entry.reimbursements,
-      existingEarnings:  updatedEarnings,
+      monthlyCtc:         entry.monthlyCtc,
+      annualCtc:          actualAnnualCtc,
+      workingDays:        entry.workingDays,
+      lwpDays:            entry.lwpDays,
+      components:         compSnaps,
+      reimbursements:     entry.reimbursements,
+      existingEarnings:   updatedEarnings,
       existingDeductions: updatedDeductions,
     });
 
@@ -547,9 +641,59 @@ router.post('/runs/:id/finalize', authorize(['ADMIN']), async (req: AuthRequest,
       where: { id: req.params.id },
       data:  { status: 'FINALIZED' },
     });
+
+    // Send payslip ready emails (fire and forget — never block the response)
+    prisma.payslipEntry.findMany({
+      where:   { payrollRunId: run.id },
+      include: { user: { select: { email: true, profile: { select: { firstName: true } } } } },
+    }).then((entries) => {
+      const monthName = MONTH_NAMES[run.month] ?? String(run.month);
+      for (const entry of entries) {
+        if (!entry.user.email) continue;
+        sendPayslipReadyEmail({
+          to:        entry.user.email,
+          firstName: entry.user.profile?.firstName ?? 'Employee',
+          month:     monthName,
+          year:      run.year,
+          netPay:    entry.netPay,
+        }).catch(() => {});
+      }
+    }).catch(() => {});
+
     res.json(updated);
   } catch (err) {
     console.error('Finalize run error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/payroll/runs/:id/reopen — Admin reopens a FINALIZED run back to DRAFT
+router.post('/runs/:id/reopen', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
+    if (!run)                       { res.status(404).json({ error: 'Run not found' }); return; }
+    if (run.status !== 'FINALIZED') { res.status(400).json({ error: 'Only finalized runs can be reopened' }); return; }
+
+    const updated = await prisma.payrollRun.update({
+      where: { id: req.params.id },
+      data:  { status: 'DRAFT' },
+    });
+
+    // Audit log
+    await prisma.auditLog.create({
+      data: {
+        actorId:  req.user!.id,
+        action:   'PAYROLL_REOPENED',
+        entity:   'PayrollRun',
+        entityId: run.id,
+        oldValues: { status: 'FINALIZED' },
+        newValues: { status: 'DRAFT', month: run.month, year: run.year },
+      },
+    });
+
+    res.json(updated);
+  } catch (err) {
+    console.error('Reopen payroll run error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

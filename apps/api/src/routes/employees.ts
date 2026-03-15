@@ -11,7 +11,12 @@ import { Router, Response }          from 'express';
 import { PrismaClient }              from '@prisma/client';
 import bcrypt                        from 'bcryptjs';
 import { z }                         from 'zod';
+import multer                        from 'multer';
+import ExcelJS                       from 'exceljs';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
+import { createAuditLog }            from '../lib/audit';
+
+const xlsxUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single('file');
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -32,6 +37,7 @@ const aadharRegex = /^\d{12}$/;
 
 const profileUpdateSchema = z.object({
   firstName:        z.string().min(1).optional(),
+  middleName:       z.string().optional(),
   lastName:         z.string().min(1).optional(),
   dateOfBirth:      z.string().optional(),
   gender:           z.enum(['Male', 'Female', 'Other', 'Prefer not to say']).optional(),
@@ -71,13 +77,25 @@ const profileUpdateSchema = z.object({
 
   // Employment type — admin-only
   employmentType: z.enum(['FULL_TIME', 'INTERN']).optional(),
+
+  // Employment lifecycle status — admin-only
+  employmentStatus: z.enum(['PENDING_JOIN', 'PROBATION', 'INTERNSHIP', 'REGULAR_FULL_TIME', 'NOTICE_PERIOD', 'INACTIVE']).optional(),
 });
+
+// Password must be at least 8 chars with uppercase, lowercase, digit, and special char
+const passwordSchema = z.string()
+  .min(8, 'Password must be at least 8 characters')
+  .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+  .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
+  .regex(/[0-9]/, 'Password must contain at least one number')
+  .regex(/[^A-Za-z0-9]/, 'Password must contain at least one special character');
 
 const createEmployeeSchema = z.object({
   email:             z.string().email(),
-  password:          z.string().min(8, 'Password must be at least 8 characters'),
+  password:          passwordSchema,
   role:              z.enum(['EMPLOYEE', 'MANAGER', 'ADMIN']).default('EMPLOYEE'),
   firstName:         z.string().min(1),
+  middleName:        z.string().optional(),
   lastName:          z.string().min(1),
   employeeId:        z.string().min(1),
   designation:       z.string().min(1, 'Designation is required'),
@@ -96,6 +114,7 @@ const createEmployeeSchema = z.object({
   ifscCode:          z.string().regex(ifscRegex, 'Invalid IFSC format. Expected: AAAA0XXXXXX'),
   bankName:          z.string().min(1, 'Bank name is required'),
   employmentType:    z.enum(['FULL_TIME', 'INTERN']).default('FULL_TIME'),
+  employmentStatus:  z.enum(['PENDING_JOIN', 'PROBATION', 'INTERNSHIP', 'REGULAR_FULL_TIME', 'NOTICE_PERIOD', 'INACTIVE']).optional(),
   pan:               z.string().regex(panRegex, 'Invalid PAN format').optional().or(z.literal('')),
   aadharNumber:      z.string().regex(aadharRegex, 'Aadhar must be 12 digits').optional().or(z.literal('')),
   uan:               z.string().optional(),
@@ -107,21 +126,23 @@ router.get('/', authorize(['ADMIN', 'MANAGER']), async (_req, res: Response) => 
     const employees = await prisma.user.findMany({
       where: { isActive: true },
       select: {
-        id:    true,
-        email: true,
-        role:  true,
+        id:               true,
+        email:            true,
+        role:             true,
+        employmentStatus: true,
         profile: {
           select: {
-            firstName:     true,
-            lastName:      true,
-            employeeId:    true,
-            designation:    true,
-            department:     true,
-            officeLocation: true,
-            dateOfJoining:  true,
-            managerId:      true,
-            annualCtc:      true,
-            employmentType: true,
+            firstName:       true,
+            middleName:      true,
+            lastName:        true,
+            employeeId:      true,
+            designation:     true,
+            department:      true,
+            officeLocation:  true,
+            dateOfJoining:   true,
+            managerId:       true,
+            annualCtc:       true,
+            employmentType:  true,
           },
         },
       },
@@ -136,7 +157,7 @@ router.get('/', authorize(['ADMIN', 'MANAGER']), async (_req, res: Response) => 
 });
 
 // GET /api/employees/:id - fetch a specific employee (self, or Admin/Manager)
-router.get('/:id', async (req: AuthRequest, res: Response) => {
+router.get('/:id([a-z0-9]+)', async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const requestingUser = req.user!;
 
@@ -163,11 +184,11 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
     }
 
     // Resolve reporting manager name (managerId is a plain string, not a Prisma relation)
-    let reportsTo: { firstName: string; lastName: string; employeeId: string } | null = null;
+    let reportsTo: { firstName: string; middleName: string | null; lastName: string; employeeId: string } | null = null;
     if (user.profile?.managerId) {
       reportsTo = await prisma.profile.findUnique({
         where:  { userId: user.profile.managerId },
-        select: { firstName: true, lastName: true, employeeId: true },
+        select: { firstName: true, middleName: true, lastName: true, employeeId: true },
       });
     }
 
@@ -188,11 +209,11 @@ router.post('/', authorize(['ADMIN']), async (req: AuthRequest, res: Response) =
     }
 
     const {
-      email, password, role, firstName, lastName, employeeId,
+      email, password, role, firstName, middleName, lastName, employeeId,
       designation, department, officeLocation, dateOfJoining, dateOfBirth,
       gender, phone, personalEmail, emergencyContact, bloodGroup,
       managerId, annualCtc, bankAccountNumber, ifscCode, bankName,
-      employmentType, pan, aadharNumber, uan,
+      employmentType, employmentStatus, pan, aadharNumber, uan,
     } = parsed.data;
 
     // Check if email or employeeId already exists
@@ -204,14 +225,19 @@ router.post('/', authorize(['ADMIN']), async (req: AuthRequest, res: Response) =
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // New employees default to PENDING_JOIN unless explicitly set
+    const defaultStatus = employmentStatus || 'PENDING_JOIN';
+
     const newUser = await prisma.user.create({
       data: {
         email,
         password: hashedPassword,
         role: role as any,
+        employmentStatus: defaultStatus as any,
         profile: {
           create: {
             firstName,
+            middleName:     middleName || undefined,
             lastName,
             employeeId,
             designation,
@@ -240,7 +266,7 @@ router.post('/', authorize(['ADMIN']), async (req: AuthRequest, res: Response) =
         id:      true,
         email:   true,
         role:    true,
-        profile: { select: { firstName: true, lastName: true, employeeId: true } },
+        profile: { select: { firstName: true, middleName: true, lastName: true, employeeId: true } },
       },
     });
 
@@ -252,7 +278,7 @@ router.post('/', authorize(['ADMIN']), async (req: AuthRequest, res: Response) =
 });
 
 // PUT /api/employees/:id - update profile (Admin can update any; Employee updates only self)
-router.put('/:id', async (req: AuthRequest, res: Response) => {
+router.put('/:id([a-z0-9]+)', async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
   const requestingUser = req.user!;
 
@@ -268,7 +294,7 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    const { dateOfBirth, dateOfJoining, role, email, employeeId, annualCtc, ...profileRest } = parsed.data;
+    const { dateOfBirth, dateOfJoining, role, email, employeeId, annualCtc, employmentStatus, ...profileRest } = parsed.data;
 
     // annualCtc is admin-only — strip it if the requester is not an admin
     const ctcUpdate = requestingUser.role === 'ADMIN' && annualCtc !== undefined
@@ -293,11 +319,19 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
       }
     }
 
-    // If admin is changing role or email, update the User record
+    // Capture old CTC before update (for salary revision log)
+    let oldCtcSnapshot: number | undefined;
+    if (requestingUser.role === 'ADMIN' && annualCtc !== undefined) {
+      const snap = await prisma.profile.findUnique({ where: { userId: id }, select: { annualCtc: true } });
+      oldCtcSnapshot = snap?.annualCtc;
+    }
+
+    // If admin is changing role, email, or employment status, update the User record
     if (requestingUser.role === 'ADMIN') {
       const userUpdate: any = {};
-      if (role)  userUpdate.role  = role;
-      if (email) userUpdate.email = email;
+      if (role)             userUpdate.role             = role;
+      if (email)            userUpdate.email            = email;
+      if (employmentStatus) userUpdate.employmentStatus = employmentStatus;
       if (Object.keys(userUpdate).length > 0) {
         await prisma.user.update({ where: { id }, data: userUpdate });
       }
@@ -314,6 +348,48 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
       },
     });
 
+    // Audit log + salary revision for admin-level changes
+    if (requestingUser.role === 'ADMIN') {
+      const changes: Record<string, any> = {};
+      if (role)             changes.role             = role;
+      if (annualCtc !== undefined) changes.annualCtc = annualCtc;
+      if (employmentStatus) changes.employmentStatus = employmentStatus;
+      if (Object.keys(changes).length > 0) {
+        const subjectProfile = await prisma.profile.findUnique({
+          where: { userId: id },
+          select: { firstName: true, middleName: true, lastName: true, employeeId: true },
+        });
+        await createAuditLog({
+          actorId:   requestingUser.id,
+          action:    'PROFILE_UPDATED',
+          entity:    'User',
+          entityId:  id,
+          subjectEntity: 'User',
+          subjectId: id,
+          subjectLabel: subjectProfile
+            ? `${subjectProfile.firstName}${subjectProfile.middleName ? ` ${subjectProfile.middleName}` : ''} ${subjectProfile.lastName} (${subjectProfile.employeeId})`
+            : id,
+          subjectMeta: subjectProfile
+            ? { employeeId: subjectProfile.employeeId }
+            : undefined,
+          newValues: changes,
+        });
+      }
+
+      // Auto-log salary revision when CTC changes
+      if (annualCtc !== undefined && oldCtcSnapshot !== undefined && oldCtcSnapshot !== annualCtc) {
+        await prisma.salaryRevision.create({
+          data: {
+            userId:        id,
+            effectiveDate: new Date(),
+            oldCtc:        oldCtcSnapshot,
+            newCtc:        annualCtc,
+            revisedBy:     requestingUser.id,
+          },
+        }).catch((e) => console.error('Salary revision log error (non-fatal):', e));
+      }
+    }
+
     res.json(updated);
   } catch (err) {
     console.error('Update profile error:', err);
@@ -321,8 +397,62 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// PATCH /api/employees/:id/status — Admin changes employment lifecycle status
+router.patch('/:id([a-z0-9]+)/status', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+  const parsed = z.object({
+    employmentStatus: z.enum(['PENDING_JOIN', 'PROBATION', 'INTERNSHIP', 'REGULAR_FULL_TIME', 'NOTICE_PERIOD', 'INACTIVE']),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Invalid employment status' });
+    return;
+  }
+
+  try {
+    const current = await prisma.user.findUnique({
+      where:  { id },
+      select: {
+        employmentStatus: true,
+        profile: { select: { firstName: true, middleName: true, lastName: true, employeeId: true } },
+      },
+    });
+    if (!current) {
+      res.status(404).json({ error: 'Employee not found' });
+      return;
+    }
+
+    const updated = await prisma.user.update({
+      where: { id },
+      data:  { employmentStatus: parsed.data.employmentStatus as any },
+      select: { id: true, employmentStatus: true },
+    });
+
+    await createAuditLog({
+      actorId:   req.user!.id,
+      action:    'EMPLOYMENT_STATUS_CHANGED',
+      entity:    'User',
+      entityId:  id,
+      subjectEntity: 'User',
+      subjectId: id,
+      subjectLabel: current.profile
+        ? `${current.profile.firstName}${current.profile.middleName ? ` ${current.profile.middleName}` : ''} ${current.profile.lastName} (${current.profile.employeeId})`
+        : id,
+      subjectMeta: current.profile
+        ? { employeeId: current.profile.employeeId }
+        : undefined,
+      oldValues: { employmentStatus: current.employmentStatus },
+      newValues: { employmentStatus: parsed.data.employmentStatus },
+    });
+
+    res.json(updated);
+  } catch (err) {
+    console.error('Change status error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // DELETE /api/employees/:id - soft delete (deactivate), Admin only
-router.delete('/:id', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+router.delete('/:id([a-z0-9]+)', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
   const { id } = req.params;
 
   // Prevent admin from deactivating themselves
@@ -332,9 +462,32 @@ router.delete('/:id', authorize(['ADMIN']), async (req: AuthRequest, res: Respon
   }
 
   try {
+    const subject = await prisma.user.findUnique({
+      where: { id },
+      select: {
+        profile: { select: { firstName: true, middleName: true, lastName: true, employeeId: true } },
+      },
+    });
+
     await prisma.user.update({
       where: { id },
       data:  { isActive: false },
+    });
+
+    await createAuditLog({
+      actorId:   req.user!.id,
+      action:    'EMPLOYEE_DEACTIVATED',
+      entity:    'User',
+      entityId:  id,
+      subjectEntity: 'User',
+      subjectId: id,
+      subjectLabel: subject?.profile
+        ? `${subject.profile.firstName}${subject.profile.middleName ? ` ${subject.profile.middleName}` : ''} ${subject.profile.lastName} (${subject.profile.employeeId})`
+        : id,
+      subjectMeta: subject?.profile
+        ? { employeeId: subject.profile.employeeId }
+        : undefined,
+      newValues: { isActive: false },
     });
 
     res.json({ message: 'Employee deactivated successfully' });
@@ -342,6 +495,254 @@ router.delete('/:id', authorize(['ADMIN']), async (req: AuthRequest, res: Respon
     console.error('Deactivate employee error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
+});
+
+// ─── Import Template Download ─────────────────────────────────────────────────
+
+// Columns definition — single source of truth for template AND import parser
+const IMPORT_COLUMNS = [
+  { header: 'First Name *',         key: 'firstName',         width: 18 },
+  { header: 'Middle Name',          key: 'middleName',        width: 18 },
+  { header: 'Last Name *',          key: 'lastName',          width: 18 },
+  { header: 'Employee ID *',        key: 'employeeId',        width: 14 },
+  { header: 'Email *',              key: 'email',             width: 28 },
+  { header: 'Password *',           key: 'password',          width: 20 },
+  { header: 'Role',                 key: 'role',              width: 12 },
+  { header: 'Designation *',        key: 'designation',       width: 20 },
+  { header: 'Department *',         key: 'department',        width: 18 },
+  { header: 'Office Location',      key: 'officeLocation',    width: 18 },
+  { header: 'Date of Joining',      key: 'dateOfJoining',     width: 16 },
+  { header: 'Date of Birth',        key: 'dateOfBirth',       width: 16 },
+  { header: 'Gender',               key: 'gender',            width: 12 },
+  { header: 'Phone',                key: 'phone',             width: 14 },
+  { header: 'Personal Email',       key: 'personalEmail',     width: 28 },
+  { header: 'Emergency Contact',    key: 'emergencyContact',  width: 16 },
+  { header: 'Blood Group',          key: 'bloodGroup',        width: 12 },
+  { header: 'Manager Employee ID',  key: 'managerEmployeeId', width: 20 },
+  { header: 'Annual CTC *',         key: 'annualCtc',         width: 14 },
+  { header: 'Bank Account Number *',key: 'bankAccountNumber', width: 22 },
+  { header: 'IFSC Code *',          key: 'ifscCode',          width: 14 },
+  { header: 'Bank Name *',          key: 'bankName',          width: 18 },
+  { header: 'Employment Type',      key: 'employmentType',    width: 16 },
+  { header: 'PAN',                  key: 'pan',               width: 14 },
+  { header: 'Aadhar Number',        key: 'aadharNumber',      width: 14 },
+  { header: 'UAN',                  key: 'uan',               width: 14 },
+];
+
+// GET /api/employees/import-template
+router.get('/import-template', authorize(['ADMIN']), async (_req, res: Response) => {
+  try {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Athena HRMS';
+    const ws = wb.addWorksheet('Employees');
+
+    ws.columns = IMPORT_COLUMNS.map((c) => ({ header: c.header, key: c.key, width: c.width }));
+
+    // Style header row
+    const headerRow = ws.getRow(1);
+    headerRow.eachCell((cell) => {
+      const header = String(cell.value ?? '');
+      const isRequired = header.includes('*');
+      cell.font      = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill      = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: isRequired ? 'FF361963' : 'FFFD8C27' },
+      };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border    = {
+        top: { style: 'thin' }, bottom: { style: 'thin' },
+        left: { style: 'thin' }, right: { style: 'thin' },
+      };
+    });
+    headerRow.height = 28;
+
+    // Sample row
+    ws.addRow({
+      firstName: 'Arjun', middleName: 'Kumar', lastName: 'Sharma', employeeId: 'EW010',
+      email: 'arjun.sharma@ewards.com', password: 'Arjun@123',
+      role: 'EMPLOYEE', designation: 'Software Engineer', department: 'Engineering',
+      officeLocation: 'Kolkata', dateOfJoining: '2025-01-15', dateOfBirth: '1995-06-20',
+      gender: 'Male', phone: '9876543210', personalEmail: 'arjun@gmail.com',
+      emergencyContact: '9876543211', bloodGroup: 'O+',
+      managerEmployeeId: 'EW001', annualCtc: 600000,
+      bankAccountNumber: '123456789012', ifscCode: 'HDFC0001234', bankName: 'HDFC Bank',
+      employmentType: 'FULL_TIME', pan: 'ABCDE1234F', aadharNumber: '123456789012', uan: '',
+    });
+
+    // Notes worksheet
+    const notes = wb.addWorksheet('Notes');
+    notes.addRows([
+      ['Field', 'Notes'],
+      ['Role', 'EMPLOYEE | MANAGER | ADMIN  (default: EMPLOYEE)'],
+      ['Gender', 'Male | Female | Other | Prefer not to say'],
+      ['Date of Joining / DOB', 'Format: YYYY-MM-DD'],
+      ['Employment Type', 'FULL_TIME | INTERN  (default: FULL_TIME)'],
+      ['Manager Employee ID', 'Use the Employee ID of the reporting manager (not email)'],
+      ['Annual CTC', 'In rupees, numbers only (e.g. 600000)'],
+      ['PAN', 'Format: AAAAA1234A (5 uppercase letters + 4 digits + 1 uppercase letter)'],
+      ['Aadhar Number', 'Exactly 12 digits'],
+      ['IFSC Code', 'Format: AAAA0XXXXXX'],
+      ['Password', 'Min 8 chars, must include uppercase, lowercase, number, special char'],
+      ['Fields marked *', 'Required — rows with missing required fields will be skipped'],
+    ]);
+    notes.getRow(1).font = { bold: true };
+    notes.getColumn(1).width = 28;
+    notes.getColumn(2).width = 60;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="athena_employee_import_template.xlsx"');
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Template download error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ─── Bulk Import ───────────────────────────────────────────────────────────────
+
+// POST /api/employees/import
+router.post('/import', authorize(['ADMIN']), (req: AuthRequest, res: Response) => {
+  xlsxUpload(req as any, res as any, async (err) => {
+    if (err) { res.status(400).json({ error: err.message || 'File upload failed' }); return; }
+    if (!req.file) { res.status(400).json({ error: 'No file uploaded' }); return; }
+
+    try {
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(req.file.buffer);
+      const ws = wb.getWorksheet('Employees') ?? wb.worksheets[0];
+      if (!ws) { res.status(400).json({ error: 'No "Employees" worksheet found in the file' }); return; }
+
+      // Build header → column index map from row 1
+      const headerMap = new Map<string, number>();
+      ws.getRow(1).eachCell((cell, colNumber) => {
+        const raw = String(cell.value ?? '').replace(' *', '').trim();
+        headerMap.set(raw, colNumber);
+      });
+
+      const col = (name: string, row: ExcelJS.Row): string => {
+        const idx = headerMap.get(name);
+        if (!idx) return '';
+        const v = row.getCell(idx).value;
+        return v === null || v === undefined ? '' : String(v).trim();
+      };
+
+      // Pre-load all managers indexed by employeeId
+      const allManagers = await prisma.profile.findMany({ select: { userId: true, employeeId: true } });
+      const managerByEmpId = new Map(allManagers.map((m) => [m.employeeId, m.userId]));
+
+      const results: { row: number; status: 'created' | 'skipped'; employeeId?: string; reason?: string }[] = [];
+
+      for (let rowNum = 2; rowNum <= ws.rowCount; rowNum++) {
+        const row = ws.getRow(rowNum);
+        // Skip if row is empty
+        const firstName = col('First Name', row);
+        if (!firstName) continue;
+
+        const middleName     = col('Middle Name', row);
+        const lastName       = col('Last Name', row);
+        const employeeId     = col('Employee ID', row);
+        const email          = col('Email', row);
+        const password       = col('Password', row);
+        const designation    = col('Designation', row);
+        const department     = col('Department', row);
+        const annualCtcRaw   = col('Annual CTC', row);
+        const bankAccount    = col('Bank Account Number', row);
+        const ifscCode       = col('IFSC Code', row);
+        const bankName       = col('Bank Name', row);
+
+        // Required field check
+        if (!lastName || !employeeId || !email || !password || !designation || !department || !annualCtcRaw || !bankAccount || !ifscCode || !bankName) {
+          results.push({ row: rowNum, status: 'skipped', reason: 'Missing required fields' });
+          continue;
+        }
+
+        // Password validation
+        const pwParsed = passwordSchema.safeParse(password);
+        if (!pwParsed.success) {
+          results.push({ row: rowNum, status: 'skipped', employeeId, reason: pwParsed.error.errors[0]?.message ?? 'Invalid password' });
+          continue;
+        }
+
+        // Check duplicates
+        const existing = await prisma.user.findUnique({ where: { email } });
+        if (existing) {
+          results.push({ row: rowNum, status: 'skipped', employeeId, reason: `Email already exists: ${email}` });
+          continue;
+        }
+        const existingEmpId = await prisma.profile.findUnique({ where: { employeeId } });
+        if (existingEmpId) {
+          results.push({ row: rowNum, status: 'skipped', employeeId, reason: `Employee ID already exists: ${employeeId}` });
+          continue;
+        }
+
+        // Resolve manager
+        const managerEmpId = col('Manager Employee ID', row);
+        const managerId    = managerEmpId ? (managerByEmpId.get(managerEmpId) ?? '') : '';
+
+        const roleRaw          = col('Role', row);
+        const empTypeRaw       = col('Employment Type', row);
+        const genderRaw        = col('Gender', row);
+        const dateOfJoiningRaw = col('Date of Joining', row);
+        const dateOfBirthRaw   = col('Date of Birth', row);
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const annualCtc      = parseFloat(annualCtcRaw) || 0;
+
+        const role           = ['EMPLOYEE', 'MANAGER', 'ADMIN'].includes(roleRaw) ? roleRaw : 'EMPLOYEE';
+        const employmentType = empTypeRaw === 'INTERN' ? 'INTERN' : 'FULL_TIME';
+
+        try {
+          await prisma.user.create({
+            data: {
+              email,
+              password: hashedPassword,
+              role:             role as any,
+              employmentStatus: 'PENDING_JOIN',
+              profile: {
+                create: {
+                  firstName,
+                  middleName: middleName || undefined,
+                  lastName,
+                  employeeId,
+                  designation,
+                  department,
+                  officeLocation:   col('Office Location', row) || 'Kolkata',
+                  dateOfJoining:    dateOfJoiningRaw  ? new Date(dateOfJoiningRaw)  : undefined,
+                  dateOfBirth:      dateOfBirthRaw    ? new Date(dateOfBirthRaw)    : undefined,
+                  gender:           ['Male','Female','Other','Prefer not to say'].includes(genderRaw) ? genderRaw : undefined,
+                  phone:            col('Phone', row) || undefined,
+                  personalEmail:    col('Personal Email', row) || undefined,
+                  emergencyContact: col('Emergency Contact', row) || undefined,
+                  bloodGroup:       col('Blood Group', row) || undefined,
+                  managerId:        managerId || undefined,
+                  annualCtc,
+                  bankAccountNumber: bankAccount,
+                  ifscCode,
+                  bankName,
+                  employmentType,
+                  pan:          col('PAN', row) || undefined,
+                  aadharNumber: col('Aadhar Number', row) || undefined,
+                  uan:          col('UAN', row) || undefined,
+                },
+              },
+            },
+          });
+          results.push({ row: rowNum, status: 'created', employeeId });
+        } catch (createErr: any) {
+          results.push({ row: rowNum, status: 'skipped', employeeId, reason: createErr?.message ?? 'Create failed' });
+        }
+      }
+
+      const created = results.filter((r) => r.status === 'created').length;
+      const skipped = results.filter((r) => r.status === 'skipped').length;
+      res.json({ message: `Import complete. ${created} created, ${skipped} skipped.`, created, skipped, results });
+    } catch (err) {
+      console.error('Bulk import error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
 });
 
 export default router;

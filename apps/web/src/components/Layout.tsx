@@ -9,7 +9,7 @@
 import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard,
+  Home,
   User,
   CalendarDays,
   Receipt,
@@ -23,6 +23,11 @@ import {
   NotebookPen,
   Menu,
   X,
+  ShieldCheck,
+  Settings2,
+  BarChart2,
+  FolderOpen,
+  Search,
 } from 'lucide-react';
 import { useAuth }            from '@/hooks/useAuth';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -32,9 +37,9 @@ import NotificationPanel      from '@/components/NotificationPanel';
 // Navigation items definition — each item specifies required roles
 const navItems = [
   {
-    label: 'Dashboard',
+    label: 'Home',
     to:    '/dashboard',
-    icon:  LayoutDashboard,
+    icon:  Home,
     roles: ['ADMIN', 'MANAGER', 'EMPLOYEE'] as const,
   },
   {
@@ -83,6 +88,36 @@ const navItems = [
     label: 'Payroll',
     to:    '/payroll/runs',
     icon:  Banknote,
+    roles: ['ADMIN'] as const,
+  },
+  {
+    label: 'Reports',
+    to:    '/reports',
+    icon:  BarChart2,
+    roles: ['ADMIN', 'MANAGER', 'EMPLOYEE'] as const,
+  },
+  {
+    label: 'Search',
+    to:    '/search',
+    icon:  Search,
+    roles: ['ADMIN', 'MANAGER', 'EMPLOYEE'] as const,
+  },
+  {
+    label: 'Documents',
+    to:    '/documents',
+    icon:  FolderOpen,
+    roles: ['ADMIN', 'MANAGER', 'EMPLOYEE'] as const,
+  },
+  {
+    label: 'Audit Logs',
+    to:    '/audit-logs',
+    icon:  ShieldCheck,
+    roles: ['ADMIN'] as const,
+  },
+  {
+    label: 'Settings',
+    to:    '/settings',
+    icon:  Settings2,
     roles: ['ADMIN'] as const,
   },
   {

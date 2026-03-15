@@ -20,7 +20,7 @@ interface PayrollComponent {
   id:       string;
   name:     string;
   type:     'EARNING' | 'DEDUCTION';
-  calcType: 'PERCENTAGE_OF_CTC' | 'FIXED' | 'MANUAL' | 'AUTO_PT';
+  calcType: 'PERCENTAGE_OF_CTC' | 'FIXED' | 'MANUAL' | 'AUTO_PT' | 'AUTO_TDS';
   value:    number;
   isActive: boolean;
   order:    number;
@@ -41,13 +41,16 @@ const CALC_LABELS: Record<string, string> = {
   PERCENTAGE_OF_CTC: '% of Gross CTC',
   FIXED:             'Fixed (₹/month)',
   MANUAL:            'Manual (per employee)',
-  AUTO_PT:           'Auto — Professional Tax',
+  AUTO_PT:           'Auto — Professional Tax (WB)',
+  AUTO_TDS:          'Auto — TDS (New Regime)',
 };
 
 const CALC_OPTIONS: { value: string; label: string }[] = [
   { value: 'PERCENTAGE_OF_CTC', label: '% of Gross CTC' },
   { value: 'FIXED',             label: 'Fixed ₹/month (same for all)' },
   { value: 'MANUAL',            label: 'Manual (HR enters per employee)' },
+  { value: 'AUTO_TDS',          label: 'Auto — TDS / Income Tax (New Regime)' },
+  { value: 'AUTO_PT',           label: 'Auto — Professional Tax (West Bengal)' },
 ];
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -238,7 +241,8 @@ export default function PayrollSetup() {
                               {comp.calcType === 'PERCENTAGE_OF_CTC' && `${comp.value}%`}
                               {comp.calcType === 'FIXED'             && formatCurrency(comp.value)}
                               {comp.calcType === 'MANUAL'            && '—'}
-                              {comp.calcType === 'AUTO_PT'           && 'Auto'}
+                              {comp.calcType === 'AUTO_PT'           && 'Auto (PT)'}
+                              {comp.calcType === 'AUTO_TDS'          && 'Auto (TDS)'}
                             </td>
                             <td className="py-2.5 text-right">
                               <button
@@ -286,7 +290,7 @@ export default function PayrollSetup() {
                             <td className="py-2.5 font-medium text-gray-800">{comp.name}</td>
                             <td className="py-2.5 text-gray-500">{CALC_LABELS[comp.calcType]}</td>
                             <td className="py-2.5 text-right text-gray-700">
-                              {comp.calcType === 'AUTO_PT' ? 'WB Slab' : comp.calcType === 'FIXED' ? formatCurrency(comp.value) : comp.calcType === 'MANUAL' ? '—' : `${comp.value}%`}
+                              {comp.calcType === 'AUTO_PT' ? 'Auto (PT)' : comp.calcType === 'AUTO_TDS' ? 'Auto (TDS)' : comp.calcType === 'FIXED' ? formatCurrency(comp.value) : comp.calcType === 'MANUAL' ? '—' : `${comp.value}%`}
                             </td>
                             <td className="py-2.5 text-right">
                               {comp.calcType !== 'AUTO_PT' ? (

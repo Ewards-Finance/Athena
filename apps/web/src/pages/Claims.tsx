@@ -332,7 +332,7 @@ export default function Claims() {
                     <span className={`text-xs font-medium px-2 py-1 rounded-full ${claimStatusColor(claim.status)}`}>
                       {claim.status}
                     </span>
-                    {isManagerOrAdmin && claim.status === 'PENDING' && (
+                    {isManagerOrAdmin && claim.status === 'PENDING' && claim.employeeId !== user?.id && (
                       <>
                         <Button
                           size="sm"

@@ -9,6 +9,7 @@ import { Router, Request, Response } from 'express';
 import { PrismaClient }              from '@prisma/client';
 import { z }                         from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
+import { sendAnnouncementEmail } from '../lib/email';
 
 const router  = Router();
 const prisma  = new PrismaClient();
@@ -48,6 +49,23 @@ router.post('/', authorize(['ADMIN']), async (req: AuthRequest, res: Response) =
       },
     });
     res.status(201).json(item);
+
+    // Batch email to all active employees (fire and forget)
+    prisma.user.findMany({
+      where:  { isActive: true },
+      select: { email: true, profile: { select: { firstName: true } } },
+    }).then((users) => {
+      for (const u of users) {
+        if (!u.email) continue;
+        sendAnnouncementEmail({
+          to:        u.email,
+          firstName: u.profile?.firstName ?? 'Employee',
+          title:     parsed.data.title,
+          body:      parsed.data.body,
+        }).catch(() => {});
+      }
+    }).catch(() => {});
+
   } catch (err) {
     console.error('Create announcement error:', err);
     res.status(500).json({ error: 'Internal server error' });

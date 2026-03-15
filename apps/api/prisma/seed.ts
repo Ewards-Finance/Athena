@@ -139,32 +139,22 @@ async function main() {
   });
 
   // --- 5. Seed Leave Balances for all users (2026) ---
+  // Only Paid Leave needs a balance row. Unlimited types (LWP, WFH, Travelling) have no balance.
   const YEAR = 2026;
-  const defaultBalances: { leaveType: string; total: number }[] = [
-    { leaveType: 'SL',        total: 12  },
-    { leaveType: 'CL',        total: 12  },
-    { leaveType: 'EL',        total: 15  },
-    { leaveType: 'MATERNITY', total: 180 },
-    { leaveType: 'PATERNITY', total: 5   },
-  ];
-
   for (const u of [admin, manager, emp1, emp2]) {
-    for (const b of defaultBalances) {
-      await prisma.leaveBalance.upsert({
-        where: { userId_year_leaveType: { userId: u.id, year: YEAR, leaveType: b.leaveType } },
-        update: {},
-        create: { userId: u.id, year: YEAR, leaveType: b.leaveType, total: b.total, used: 0 },
-      });
-    }
+    await prisma.leaveBalance.upsert({
+      where:  { userId_year_leaveType: { userId: u.id, year: YEAR, leaveType: 'PL' } },
+      update: {},
+      create: { userId: u.id, year: YEAR, leaveType: 'PL', total: 18, used: 0 },
+    });
   }
 
   // --- 6. Seed Leave Policies (org-wide defaults) ---
   const leavePolicies = [
-    { leaveType: 'SL',        label: 'Sick Leave',      defaultTotal: 12,  isActive: true },
-    { leaveType: 'CL',        label: 'Casual Leave',    defaultTotal: 12,  isActive: true },
-    { leaveType: 'EL',        label: 'Earned Leave',    defaultTotal: 15,  isActive: true },
-    { leaveType: 'MATERNITY', label: 'Maternity Leave', defaultTotal: 180, isActive: true },
-    { leaveType: 'PATERNITY', label: 'Paternity Leave', defaultTotal: 5,   isActive: true },
+    { leaveType: 'PL',            label: 'Paid Leave',      defaultTotal: 18, isActive: true, isUnlimited: false },
+    { leaveType: 'LWP',           label: 'Unpaid Leave',    defaultTotal: 0,  isActive: true, isUnlimited: true  },
+    { leaveType: 'TEMPORARY_WFH', label: 'Temporary WFH',   defaultTotal: 0,  isActive: true, isUnlimited: true  },
+    { leaveType: 'TRAVELLING',    label: 'Travelling',      defaultTotal: 0,  isActive: true, isUnlimited: true  },
   ];
   for (const p of leavePolicies) {
     await prisma.leavePolicy.upsert({
@@ -181,7 +171,7 @@ async function main() {
       {
         employeeId: emp1.id,
         managerId:  manager.id,
-        leaveType:  'CL',
+        leaveType:  'PL',
         startDate:  new Date('2026-03-10'),
         endDate:    new Date('2026-03-11'),
         totalDays:  2,
@@ -191,13 +181,13 @@ async function main() {
       {
         employeeId: emp2.id,
         managerId:  manager.id,
-        leaveType:  'SL',
+        leaveType:  'PL',
         startDate:  new Date('2026-03-05'),
         endDate:    new Date('2026-03-05'),
         totalDays:  1,
-        reason:     'Not feeling well',
+        reason:     'Personal day',
         status:     'APPROVED',
-        managerComment: 'Get well soon',
+        managerComment: 'Approved',
         approvedAt: new Date('2026-03-04'),
       },
     ],

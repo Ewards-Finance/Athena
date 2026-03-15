@@ -1,13 +1,16 @@
 /**
- * Athena V2 - Leave Management Page
- * Employees apply for leaves; Managers/Admins approve or reject.
- * Admins can also manage leave policies and individual employee quotas.
+ * Athena V2 - Leave Management
+ *
+ * Tab 1 "My Leaves"  — balance bars + apply form + own requests        (all roles)
+ * Tab 2 "Team"       — team balances + team requests + approve/reject  (Manager, Admin)
+ * Tab 3 "Manage"     — leave policy config + quota overrides           (Admin only)
  */
 
 import { Fragment, useEffect, useState } from 'react';
 import { useForm }     from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z }           from 'zod';
+import { toast }       from 'sonner';
 import { useAuth }     from '@/hooks/useAuth';
 import api             from '@/lib/api';
 import { formatDate, leaveStatusColor } from '@/lib/utils';
@@ -16,15 +19,11 @@ import { Button }  from '@/components/ui/button';
 import { Input }   from '@/components/ui/input';
 import { Label }   from '@/components/ui/label';
 import { Badge }   from '@/components/ui/badge';
-import { Loader2, Plus, Check, X, CalendarDays, ShieldCheck, Settings2, Pencil, Trash2, ArrowLeftRight } from 'lucide-react';
+import { Loader2, Plus, Check, X, CalendarDays, Settings2, Pencil, Trash2, ArrowLeftRight, Users, RefreshCw } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface LeaveBalance {
-  leaveType: string;
-  total:     number;
-  used:      number;
-}
+interface LeaveBalance { leaveType: string; total: number; used: number; }
 
 interface TeamOverviewUser {
   id:            string;
@@ -38,11 +37,12 @@ interface LeavePolicy {
   label:        string;
   defaultTotal: number;
   isActive:     boolean;
+  isUnlimited:  boolean;
 }
 
 interface LeaveRequest {
   id:            string;
-  employeeId:    string;   // User ID of the employee — used to split own vs team requests
+  employeeId:    string;
   leaveType:     string;
   startDate:     string;
   endDate:       string;
@@ -50,18 +50,11 @@ interface LeaveRequest {
   reason:        string;
   status:        string;
   managerComment?: string;
-  // Half-day fields
   durationType?:  string;
   singleDayType?: string;
   startDayType?:  string;
   endDayType?:    string;
-  employee?: {
-    profile?: {
-      firstName: string;
-      lastName:  string;
-      employeeId: string;
-    };
-  };
+  employee?: { profile?: { firstName: string; lastName: string; employeeId: string } };
 }
 
 // ─── Form schema ──────────────────────────────────────────────────────────────
@@ -69,58 +62,69 @@ interface LeaveRequest {
 const leaveSchema = z.object({
   leaveType:    z.string().min(1, 'Select a leave type'),
   durationType: z.enum(['SINGLE', 'MULTIPLE']),
-  // Single-day fields
   singleDate:    z.string().optional(),
   singleDayType: z.enum(['FULL', 'FIRST_HALF', 'SECOND_HALF']).optional(),
-  // Multiple-day fields
   startDate:    z.string().optional(),
   startDayType: z.enum(['FULL', 'FROM_SECOND_HALF']).optional(),
   endDate:      z.string().optional(),
   endDayType:   z.enum(['FULL', 'UNTIL_FIRST_HALF']).optional(),
-  // Common
   reason: z.string().min(5, 'Reason must be at least 5 characters'),
 }).superRefine((data, ctx) => {
   if (data.durationType === 'SINGLE') {
-    if (!data.singleDate)
-      ctx.addIssue({ code: 'custom', message: 'Date is required', path: ['singleDate'] });
-    if (!data.singleDayType)
-      ctx.addIssue({ code: 'custom', message: 'Select a session', path: ['singleDayType'] });
+    if (!data.singleDate)    ctx.addIssue({ code: 'custom', message: 'Date is required',          path: ['singleDate'] });
+    if (!data.singleDayType) ctx.addIssue({ code: 'custom', message: 'Select a session',          path: ['singleDayType'] });
   } else {
-    if (!data.startDate)
-      ctx.addIssue({ code: 'custom', message: 'Start date is required', path: ['startDate'] });
-    if (!data.endDate)
-      ctx.addIssue({ code: 'custom', message: 'End date is required', path: ['endDate'] });
-    if (!data.startDayType)
-      ctx.addIssue({ code: 'custom', message: 'Select a session', path: ['startDayType'] });
-    if (!data.endDayType)
-      ctx.addIssue({ code: 'custom', message: 'Select a session', path: ['endDayType'] });
+    if (!data.startDate)     ctx.addIssue({ code: 'custom', message: 'Start date is required',    path: ['startDate'] });
+    if (!data.endDate)       ctx.addIssue({ code: 'custom', message: 'End date is required',      path: ['endDate'] });
+    if (!data.startDayType)  ctx.addIssue({ code: 'custom', message: 'Select a session',          path: ['startDayType'] });
+    if (!data.endDayType)    ctx.addIssue({ code: 'custom', message: 'Select a session',          path: ['endDayType'] });
     if (data.startDate && data.endDate && new Date(data.startDate) > new Date(data.endDate))
-      ctx.addIssue({ code: 'custom', message: 'End date must be on or after start date', path: ['endDate'] });
+      ctx.addIssue({ code: 'custom', message: 'End date must be on or after start date',          path: ['endDate'] });
   }
 });
-
 type LeaveFormData = z.infer<typeof leaveSchema>;
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── BalanceBar ───────────────────────────────────────────────────────────────
 
 function BalanceBar({ label, total, used }: { label: string; total: number; used: number }) {
   const available = Math.max(total - used, 0);
   const pct       = total > 0 ? Math.min((used / total) * 100, 100) : 0;
   const isLow     = available <= 2 && total > 0;
   return (
-    <div className="space-y-1">
+    <div className="space-y-1.5">
       <div className="flex items-center justify-between text-xs">
         <span className="font-medium text-muted-foreground">{label}</span>
-        <span className={`font-semibold ${isLow ? 'text-rose-600' : 'text-foreground'}`}>
-          {available} / {total} left
-        </span>
+        <span className={`font-semibold ${isLow ? 'text-rose-600' : ''}`}>{available} / {total} left</span>
       </div>
-      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-        <div
-          className="h-full rounded-full transition-all"
-          style={{ width: `${pct}%`, backgroundColor: isLow ? '#ef4444' : '#361963' }}
-        />
+      <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: isLow ? '#ef4444' : '#361963' }} />
       </div>
+    </div>
+  );
+}
+
+// ─── Tab button ───────────────────────────────────────────────────────────────
+
+function TabBtn({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
+        active ? 'border-[#361963] text-[#361963]' : 'border-transparent text-muted-foreground hover:text-foreground'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ─── Empty state ──────────────────────────────────────────────────────────────
+
+function Empty({ icon: Icon, text }: { icon: React.ElementType; text: string }) {
+  return (
+    <div className="flex flex-col items-center gap-2 py-10 text-muted-foreground">
+      <Icon className="h-8 w-8 opacity-30" />
+      <p className="text-sm">{text}</p>
     </div>
   );
 }
@@ -130,77 +134,70 @@ function BalanceBar({ label, total, used }: { label: string; total: number; used
 export default function Leaves() {
   const { user } = useAuth();
 
-  // ── Leave requests ──
-  const [leaves, setLeaves]         = useState<LeaveRequest[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [showForm, setShowForm]     = useState(false);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const isManagerOrAdmin = user?.role === 'ADMIN' || user?.role === 'MANAGER';
+  const isAdmin          = user?.role === 'ADMIN';
 
-  // ── Own balance ──
-  const [balances, setBalances] = useState<LeaveBalance[]>([]);
+  type Tab = 'my' | 'team' | 'manage';
+  const [tab, setTab] = useState<Tab>('my');
 
-  // ── Team overview ──
+  // ── Data ──
+  const [leaves,       setLeaves]       = useState<LeaveRequest[]>([]);
+  const [balances,     setBalances]     = useState<LeaveBalance[]>([]);
   const [teamOverview, setTeamOverview] = useState<TeamOverviewUser[]>([]);
-  const [showTeam, setShowTeam]         = useState(false);
-  const [teamLoading, setTeamLoading]   = useState(false);
-  const [teamError, setTeamError]       = useState('');
+  const [policies,     setPolicies]     = useState<LeavePolicy[]>([]);
+  const [policyDraft,  setPolicyDraft]  = useState<LeavePolicy[]>([]);
 
-  // ── Leave policies (admin) ──
-  const [policies, setPolicies]         = useState<LeavePolicy[]>([]);
-  const [policyDraft, setPolicyDraft]   = useState<LeavePolicy[]>([]);
-  const [showPolicy, setShowPolicy]     = useState(false);
+  // ── Loading ──
+  const [loading,      setLoading]      = useState(true);
+  const [teamLoading,  setTeamLoading]  = useState(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [savingPolicy, setSavingPolicy] = useState(false);
+  const [savingQuota,  setSavingQuota]  = useState(false);
+  const [applyingAll,  setApplyingAll]  = useState(false);
+  const [resettingFY,  setResettingFY]  = useState(false);
+  const _now   = new Date();
+  const _curFY = _now.getMonth() >= 3 ? _now.getFullYear() : _now.getFullYear() - 1;
+  const [fyFrom, setFyFrom] = useState(_curFY - 1);
+  const [fyTo,   setFyTo]   = useState(_curFY);
 
-  // ── Add new leave type (admin) ──
-  const [newLT, setNewLT] = useState({ code: '', label: '', days: 0 });
+  // ── Form / UI state ──
+  const [showForm,       setShowForm]       = useState(false);
+  const [overlapWarning, setOverlapWarning] = useState<string | null>(null);
+  const [pendingData,    setPendingData]    = useState<any>(null);
+  const [rejectId,       setRejectId]       = useState<string | null>(null);
+  const [rejectComment,  setRejectComment]  = useState('');
+  const [editingUserId,  setEditingUserId]  = useState<string | null>(null);
+  const [quotaDraft,     setQuotaDraft]     = useState<Record<string, number>>({});
+  const [newLT,          setNewLT]          = useState({ code: '', label: '', days: 0 });
 
-  // ── Individual quota edit (admin) ──
-  const [editingUserId, setEditingUserId]   = useState<string | null>(null);
-  const [quotaDraft, setQuotaDraft]         = useState<Record<string, number>>({});
-  const [savingQuota, setSavingQuota]       = useState(false);
-
+  // ── Form ──
   const { register, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } =
     useForm<LeaveFormData>({
       resolver: zodResolver(leaveSchema),
       defaultValues: { durationType: 'SINGLE', singleDayType: 'FULL', startDayType: 'FULL', endDayType: 'FULL' },
     });
-
   const durationType = watch('durationType');
 
-  const isManagerOrAdmin = user?.role === 'ADMIN' || user?.role === 'MANAGER';
-  const isAdmin          = user?.role === 'ADMIN';
-
-  // ── Fetchers ──
+  // ── Fetchers ──────────────────────────────────────────────────────────────
 
   const fetchLeaves = async () => {
     try {
       const { data } = await api.get<LeaveRequest[]>('/leaves');
       setLeaves(data);
-    } catch {
-      // silent
-    } finally {
-      setLoading(false);
-    }
+    } catch { /* silent */ }
+    finally { setLoading(false); }
   };
 
   const fetchBalances = async () => {
-    try {
-      const { data } = await api.get<LeaveBalance[]>('/leave-balance');
-      setBalances(data);
-    } catch { /* non-critical */ }
+    try { const { data } = await api.get<LeaveBalance[]>('/leave-balance'); setBalances(data); }
+    catch { /* non-critical */ }
   };
 
   const fetchTeamOverview = async () => {
     setTeamLoading(true);
-    setTeamError('');
-    try {
-      const { data } = await api.get<TeamOverviewUser[]>('/leave-balance/overview');
-      setTeamOverview(data);
-    } catch (err: any) {
-      setTeamError(String(err?.response?.data?.error || err?.message || 'Failed to load team balances'));
-    } finally {
-      setTeamLoading(false);
-    }
+    try { const { data } = await api.get<TeamOverviewUser[]>('/leave-balance/overview'); setTeamOverview(data); }
+    catch { toast.error('Failed to load team balances'); }
+    finally { setTeamLoading(false); }
   };
 
   const fetchPolicies = async () => {
@@ -215,23 +212,39 @@ export default function Leaves() {
     fetchLeaves();
     fetchBalances();
     fetchPolicies();
-    // Auto-load team overview for managers
-    if (isManagerOrAdmin) {
-      setShowTeam(true);
-      fetchTeamOverview();
-    }
+    if (isManagerOrAdmin) fetchTeamOverview();
   }, []);
 
-  // ── Leave actions ──
+  // ── Leave actions ─────────────────────────────────────────────────────────
+
+  const submitLeave = async (data: any, force = false) => {
+    const res = await api.post(`/leaves${force ? '?force=true' : ''}`, data);
+    if (res.data?.warning) {
+      setOverlapWarning(res.data.message);
+      setPendingData(data);
+      return;
+    }
+    setShowForm(false);
+    setOverlapWarning(null);
+    setPendingData(null);
+    reset();
+    fetchLeaves();
+    fetchBalances();
+    toast.success('Leave application submitted');
+  };
 
   const onSubmit = async (data: LeaveFormData) => {
-    try {
-      await api.post('/leaves', data);
-      setShowForm(false);
-      reset();
-      fetchLeaves();
-    } catch (err: any) {
-      alert(err?.response?.data?.error || 'Failed to apply leave');
+    try { await submitLeave(data, false); }
+    catch (err: any) { toast.error(err?.response?.data?.error || 'Failed to apply leave'); }
+  };
+
+  const confirmOverlap = async () => {
+    if (!pendingData) return;
+    try { await submitLeave(pendingData, true); }
+    catch (err: any) {
+      toast.error(err?.response?.data?.error || 'Failed to apply leave');
+      setOverlapWarning(null);
+      setPendingData(null);
     }
   };
 
@@ -241,34 +254,36 @@ export default function Leaves() {
       await api.patch(`/leaves/${id}/approve`, { comment: 'Approved' });
       fetchLeaves();
       fetchBalances();
-    } finally {
-      setActionLoading(null);
-    }
+      toast.success('Leave approved');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || 'Failed to approve');
+    } finally { setActionLoading(null); }
   };
 
-  const handleReject = async (id: string) => {
-    const comment = prompt('Reason for rejection (optional):') ?? 'Rejected';
-    setActionLoading(id + '-reject');
+  const handleReject = async () => {
+    if (!rejectId) return;
+    setActionLoading(rejectId + '-reject');
     try {
-      await api.patch(`/leaves/${id}/reject`, { comment });
+      await api.patch(`/leaves/${rejectId}/reject`, { comment: rejectComment || 'Rejected' });
       fetchLeaves();
-    } finally {
-      setActionLoading(null);
-    }
+      setRejectId(null);
+      setRejectComment('');
+      toast.success('Leave rejected');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || 'Failed to reject');
+    } finally { setActionLoading(null); }
   };
 
   const handleWithdraw = async (id: string) => {
-    if (!confirm('Withdraw this leave request? This cannot be undone.')) return;
     setActionLoading(id + '-withdraw');
     try {
       await api.delete(`/leaves/${id}`);
       fetchLeaves();
       fetchBalances();
+      toast.success('Leave request withdrawn');
     } catch (err: any) {
-      alert(err?.response?.data?.error || 'Failed to withdraw leave request');
-    } finally {
-      setActionLoading(null);
-    }
+      toast.error(err?.response?.data?.error || 'Failed to withdraw leave request');
+    } finally { setActionLoading(null); }
   };
 
   const handleChangeType = async (id: string, newType: string) => {
@@ -276,88 +291,84 @@ export default function Leaves() {
     try {
       await api.patch(`/leaves/${id}/change-type`, { leaveType: newType });
       fetchLeaves();
+      toast.success('Leave type updated');
     } catch (err: any) {
-      alert(err?.response?.data?.error || 'Failed to change leave type');
-    } finally {
-      setActionLoading(null);
-    }
+      toast.error(err?.response?.data?.error || 'Failed to change leave type');
+    } finally { setActionLoading(null); }
   };
 
-  // ── Policy actions (admin) ──
+  // ── Policy actions ────────────────────────────────────────────────────────
 
   const handleSavePolicy = async () => {
     setSavingPolicy(true);
     try {
-      const payload = policyDraft.map(({ id, label, defaultTotal, isActive }) => ({
-        id, label, defaultTotal, isActive,
-      }));
+      const payload = policyDraft.map(({ id, label, defaultTotal, isActive }) => ({ id, label, defaultTotal, isActive }));
       const { data } = await api.put<LeavePolicy[]>('/leave-policy', payload);
       setPolicies(data);
       setPolicyDraft(data.map((p) => ({ ...p })));
-      // Refresh balances so the balance card reflects any downstream changes
       fetchBalances();
-      if (showTeam) fetchTeamOverview();
+      if (isManagerOrAdmin) fetchTeamOverview();
+      toast.success('Policy saved');
     } catch (err: any) {
-      alert(err?.response?.data?.error || 'Failed to save policy');
-    } finally {
-      setSavingPolicy(false);
-    }
+      toast.error(err?.response?.data?.error || 'Failed to save policy');
+    } finally { setSavingPolicy(false); }
   };
 
   const handleDeletePolicy = async (id: string, leaveType: string) => {
-    if (!confirm(`Delete leave type '${leaveType}'?\n\nExisting leave requests and balances will be preserved, but employees won't be able to apply for this type.`)) return;
     try {
       await api.delete(`/leave-policy/${id}`);
       fetchPolicies();
       fetchBalances();
+      toast.success(`Leave type '${leaveType}' deleted`);
     } catch (err: any) {
-      alert(err?.response?.data?.error || 'Failed to delete leave type');
+      toast.error(err?.response?.data?.error || 'Failed to delete leave type');
     }
   };
 
   const handleAddLeaveType = async () => {
-    if (!newLT.code || !newLT.label) {
-      alert('Type code and label are required');
-      return;
-    }
+    if (!newLT.code || !newLT.label) { toast.error('Type code and label are required'); return; }
     try {
-      await api.post('/leave-policy', {
-        leaveType:    newLT.code.toUpperCase(),
-        label:        newLT.label,
-        defaultTotal: Number(newLT.days),
-      });
+      await api.post('/leave-policy', { leaveType: newLT.code.toUpperCase(), label: newLT.label, defaultTotal: Number(newLT.days) });
       fetchPolicies();
       fetchBalances();
       setNewLT({ code: '', label: '', days: 0 });
+      toast.success('Leave type added');
     } catch (err: any) {
-      alert(err?.response?.data?.error || 'Failed to add leave type');
+      toast.error(err?.response?.data?.error || 'Failed to add leave type');
     }
   };
 
+  const handleFYReset = async () => {
+    setResettingFY(true);
+    try {
+      const res = await api.post('/leave-balance/reset-fy', { fromYear: fyFrom, toYear: fyTo });
+      toast.success(res.data.message || `FY reset complete: ${fyFrom} → ${fyTo}`);
+      fetchBalances();
+      if (isManagerOrAdmin) fetchTeamOverview();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || 'Failed to reset FY');
+    } finally { setResettingFY(false); }
+  };
+
   const handleApplyToAll = async () => {
-    if (!confirm(`Apply current policy defaults to ALL employees for ${new Date().getFullYear()}?\n\nThis will update every employee's leave quota to match the policy defaults. Already-used days are preserved.`)) return;
-    setSavingPolicy(true);
+    setApplyingAll(true);
     try {
       const { data } = await api.post<{ updated: number; employees: number; year: number }>(
         `/leave-policy/apply-all?year=${new Date().getFullYear()}`
       );
-      alert(`Done! Updated ${data.updated} balance records across ${data.employees} employees for ${data.year}.`);
+      toast.success(`Updated ${data.updated} balance records across ${data.employees} employees for ${data.year}`);
       fetchBalances();
-      if (showTeam) fetchTeamOverview();
+      if (isManagerOrAdmin) fetchTeamOverview();
     } catch (err: any) {
-      alert(err?.response?.data?.error || 'Failed to apply policy');
-    } finally {
-      setSavingPolicy(false);
-    }
+      toast.error(err?.response?.data?.error || 'Failed to apply policy');
+    } finally { setApplyingAll(false); }
   };
 
   const updatePolicyDraft = (leaveType: string, field: keyof LeavePolicy, value: any) => {
-    setPolicyDraft((prev) =>
-      prev.map((p) => (p.leaveType === leaveType ? { ...p, [field]: value } : p))
-    );
+    setPolicyDraft((prev) => prev.map((p) => (p.leaveType === leaveType ? { ...p, [field]: value } : p)));
   };
 
-  // ── Quota edit actions (admin) ──
+  // ── Quota edit ────────────────────────────────────────────────────────────
 
   const openQuotaEdit = (u: TeamOverviewUser) => {
     const draft: Record<string, number> = {};
@@ -369,677 +380,600 @@ export default function Leaves() {
   const handleSaveQuota = async (userId: string) => {
     setSavingQuota(true);
     try {
-      await api.put(`/leave-balance/${userId}`, {
-        year: new Date().getFullYear(),
-        ...quotaDraft,
-      });
+      await api.put(`/leave-balance/${userId}`, { year: new Date().getFullYear(), ...quotaDraft });
       setEditingUserId(null);
       fetchTeamOverview();
       fetchBalances();
+      toast.success('Quota updated');
     } catch (err: any) {
-      alert(err?.response?.data?.error || 'Failed to save quota');
-    } finally {
-      setSavingQuota(false);
-    }
+      toast.error(err?.response?.data?.error || 'Failed to save quota');
+    } finally { setSavingQuota(false); }
   };
 
-  // ── Active leave types (from policy, or all if not loaded) ──
-  const leaveTypesForForm = policies.length > 0
-    ? policies.filter((p) => p.isActive)
-    : [
-        { leaveType: 'CL', label: 'Casual Leave' },
-        { leaveType: 'SL', label: 'Sick Leave' },
-        { leaveType: 'EL', label: 'Earned Leave' },
-        { leaveType: 'MATERNITY', label: 'Maternity Leave' },
-        { leaveType: 'PATERNITY', label: 'Paternity Leave' },
-      ];
+  // ── Active leave types for apply form ─────────────────────────────────────
+  const leaveTypesForForm = policies.filter((p) => p.isActive);
 
-  // ── Render ──────────────────────────────────────────────────────────────────
+  // ── Own vs team leaves ────────────────────────────────────────────────────
+  const myLeaves   = leaves.filter((l) => l.employeeId === user?.id);
+  const teamLeaves = leaves.filter((l) => l.employeeId !== user?.id);
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  const tabs: { key: Tab; label: string; show: boolean }[] = [
+    { key: 'my',     label: 'My Leaves', show: true },
+    { key: 'team',   label: 'Team',      show: isManagerOrAdmin },
+    { key: 'manage', label: 'Manage',    show: isAdmin },
+  ];
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-5 max-w-5xl">
 
-      {/* ── Header ── */}
+      {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Leave Management</h1>
-          <p className="text-muted-foreground text-sm">
-            {isManagerOrAdmin ? 'Review and manage team leave requests' : 'Apply and track your leaves'}
-          </p>
+          <h1 className="text-2xl font-bold tracking-tight">Leaves</h1>
+          <p className="text-sm text-muted-foreground">Manage leave requests and balances</p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {isAdmin && (
-            <Button
-              variant="outline"
-              onClick={() => {
-                if (!showPolicy && policies.length === 0) fetchPolicies();
-                setShowPolicy((v) => !v);
-              }}
-            >
-              <Settings2 className="h-4 w-4 mr-2" />
-              {showPolicy ? 'Hide Policy' : 'Leave Policy'}
-            </Button>
-          )}
-          {isManagerOrAdmin && (
-            <Button
-              variant="outline"
-              onClick={() => {
-                if (!showTeam) fetchTeamOverview();
-                setShowTeam((v) => !v);
-              }}
-            >
-              <ShieldCheck className="h-4 w-4 mr-2" />
-              {showTeam ? 'Hide' : 'Team Balances'}
-            </Button>
-          )}
-          <Button
-            onClick={() => setShowForm(!showForm)}
-            style={{ backgroundColor: '#361963' }}
-            className="text-white"
-          >
+        {tab === 'my' && (
+          <Button onClick={() => setShowForm((v) => !v)} style={{ backgroundColor: '#361963' }} className="text-white">
             <Plus className="h-4 w-4 mr-2" />
             Apply Leave
           </Button>
-        </div>
+        )}
       </div>
 
-      {/* ── Leave Policy Card (Admin only) ── */}
-      {isAdmin && showPolicy && (
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center gap-2">
-              <Settings2 className="h-4 w-4" style={{ color: '#361963' }} />
-              <CardTitle className="text-base">Leave Policy Configuration</CardTitle>
-            </div>
-            <CardDescription>
-              Set org-wide default quotas and enable/disable leave categories. Defaults apply when new employee balances are auto-created.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {policyDraft.length === 0 ? (
-              <div className="flex justify-center py-4">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+      {/* Tabs */}
+      <div className="flex gap-1 border-b">
+        {tabs.filter((t) => t.show).map((t) => (
+          <TabBtn key={t.key} active={tab === t.key} onClick={() => setTab(t.key)}>{t.label}</TabBtn>
+        ))}
+      </div>
+
+      {/* ── TAB: MY LEAVES ─────────────────────────────────────────────────── */}
+      {tab === 'my' && (
+        <div className="space-y-5">
+
+          {/* Overlap warning modal */}
+          {overlapWarning && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                    <span className="text-amber-600 text-sm font-bold">!</span>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-sm">Overlapping Leave Detected</h3>
+                    <p className="text-sm text-muted-foreground mt-1">{overlapWarning}</p>
+                  </div>
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <Button variant="outline" size="sm" onClick={() => { setOverlapWarning(null); setPendingData(null); }}>Cancel</Button>
+                  <Button size="sm" style={{ backgroundColor: '#FD8C27' }} className="text-white" onClick={confirmOverlap}>Submit Anyway</Button>
+                </div>
               </div>
-            ) : (
-              <div className="space-y-4">
+            </div>
+          )}
+
+          {/* Reject modal */}
+          {rejectId && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6 space-y-4">
+                <h3 className="font-semibold text-sm">Reject Leave Request</h3>
+                <div className="space-y-1.5">
+                  <Label>Reason <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                  <Input placeholder="Briefly explain the reason…" value={rejectComment} onChange={(e) => setRejectComment(e.target.value)} />
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <Button variant="outline" size="sm" onClick={() => { setRejectId(null); setRejectComment(''); }}>Cancel</Button>
+                  <Button size="sm" variant="destructive" onClick={handleReject} disabled={!!actionLoading}>
+                    {actionLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Reject'}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Balance bars — only for non-unlimited leave types */}
+          {balances.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">My Leave Balance — {new Date().getFullYear()}</CardTitle>
+                <CardDescription>Allocated vs used days</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-5">
+                  {policies
+                    .filter((p) => !p.isUnlimited && p.isActive)
+                    .map((p) => {
+                      const b = balances.find((x) => x.leaveType === p.leaveType);
+                      if (!b) return null;
+                      return <BalanceBar key={p.leaveType} label={p.label} total={b.total} used={b.used} />;
+                    })}
+                </div>
+                {/* Show unlimited types as badges */}
+                {policies.filter((p) => p.isUnlimited && p.isActive).length > 0 && (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {policies.filter((p) => p.isUnlimited && p.isActive).map((p) => (
+                      <span key={p.leaveType} className="text-xs px-3 py-1 rounded-full border border-dashed text-muted-foreground">
+                        {p.label} — Unlimited
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Apply leave form */}
+          {showForm && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">New Leave Application</CardTitle>
+                <CardDescription>Submit a leave request for your manager's review</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="leaveType">Leave Type</Label>
+                      <select id="leaveType" className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" {...register('leaveType')}>
+                        <option value="">— Select type —</option>
+                        {leaveTypesForForm.map((t) => <option key={t.leaveType} value={t.leaveType}>{t.label}</option>)}
+                      </select>
+                      {errors.leaveType && <p className="text-xs text-destructive">{errors.leaveType.message}</p>}
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Duration</Label>
+                      <div className="flex gap-1 p-1 rounded-lg bg-muted w-fit">
+                        {(['SINGLE', 'MULTIPLE'] as const).map((dt) => (
+                          <button key={dt} type="button" onClick={() => setValue('durationType', dt, { shouldValidate: true })}
+                            className="px-4 py-1.5 rounded-md text-sm font-medium transition-all"
+                            style={durationType === dt ? { backgroundColor: '#361963', color: '#fff' } : { color: '#361963' }}>
+                            {dt === 'SINGLE' ? 'Single Day' : 'Multiple Days'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {durationType === 'SINGLE' ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label>Date</Label>
+                        <Input type="date" {...register('singleDate')} />
+                        {errors.singleDate && <p className="text-xs text-destructive">{errors.singleDate.message}</p>}
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Session</Label>
+                        <select className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm" {...register('singleDayType')}>
+                          <option value="FULL">Full Day</option>
+                          <option value="FIRST_HALF">1st Half (Morning)</option>
+                          <option value="SECOND_HALF">2nd Half (Afternoon)</option>
+                        </select>
+                        {errors.singleDayType && <p className="text-xs text-destructive">{errors.singleDayType.message}</p>}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label>Start Date</Label>
+                        <div className="flex gap-2">
+                          <Input type="date" className="flex-1" {...register('startDate')} />
+                          <select className="flex h-10 rounded-md border border-input bg-background px-2 py-2 text-sm w-44" {...register('startDayType')}>
+                            <option value="FULL">Full Day</option>
+                            <option value="FROM_SECOND_HALF">From 2nd Half</option>
+                          </select>
+                        </div>
+                        {(errors.startDate || errors.startDayType) && <p className="text-xs text-destructive">{errors.startDate?.message || errors.startDayType?.message}</p>}
+                      </div>
+                      <div className="space-y-2">
+                        <Label>End Date</Label>
+                        <div className="flex gap-2">
+                          <Input type="date" className="flex-1" {...register('endDate')} />
+                          <select className="flex h-10 rounded-md border border-input bg-background px-2 py-2 text-sm w-44" {...register('endDayType')}>
+                            <option value="FULL">Full Day</option>
+                            <option value="UNTIL_FIRST_HALF">Until 1st Half</option>
+                          </select>
+                        </div>
+                        {(errors.endDate || errors.endDayType) && <p className="text-xs text-destructive">{errors.endDate?.message || errors.endDayType?.message}</p>}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <Label>Reason</Label>
+                    <Input placeholder="Brief reason for leave…" {...register('reason')} />
+                    {errors.reason && <p className="text-xs text-destructive">{errors.reason.message}</p>}
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button type="submit" disabled={isSubmitting} style={{ backgroundColor: '#361963' }} className="text-white">
+                      {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Submit Application
+                    </Button>
+                    <Button type="button" variant="outline" onClick={() => { setShowForm(false); reset(); }}>Cancel</Button>
+                  </div>
+                </form>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* My leave requests */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-2">
+                <CalendarDays className="h-4 w-4" style={{ color: '#361963' }} />
+                <CardTitle className="text-base">My Leave Requests</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {loading ? (
+                <div className="space-y-2">{[1,2,3].map((i) => <div key={i} className="h-16 rounded-xl bg-muted animate-pulse" />)}</div>
+              ) : myLeaves.length === 0 ? (
+                <Empty icon={CalendarDays} text="No leave requests yet. Click 'Apply Leave' to get started." />
+              ) : (
+                <div className="space-y-3">
+                  {myLeaves.map((leave) => (
+                    <LeaveRow
+                      key={leave.id} leave={leave}
+                      showEmployee={false}
+                      canAction={false}
+                      canWithdraw={leave.status === 'PENDING'}
+                      actionLoading={actionLoading}
+                      onApprove={handleApprove}
+                      onRejectClick={(id) => { setRejectId(id); setRejectComment(''); }}
+                      onWithdraw={handleWithdraw}
+                      isAdmin={false}
+                      onChangeType={handleChangeType}
+                      policies={policies}
+                    />
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ── TAB: TEAM ──────────────────────────────────────────────────────── */}
+      {tab === 'team' && isManagerOrAdmin && (
+        <div className="space-y-5">
+
+          {/* Reject modal (shared) */}
+          {rejectId && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6 space-y-4">
+                <h3 className="font-semibold text-sm">Reject Leave Request</h3>
+                <div className="space-y-1.5">
+                  <Label>Reason <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                  <Input placeholder="Briefly explain the reason…" value={rejectComment} onChange={(e) => setRejectComment(e.target.value)} />
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <Button variant="outline" size="sm" onClick={() => { setRejectId(null); setRejectComment(''); }}>Cancel</Button>
+                  <Button size="sm" variant="destructive" onClick={handleReject} disabled={!!actionLoading}>
+                    {actionLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Reject'}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Team balance table */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base">Team Leave Balances — {new Date().getFullYear()}</CardTitle>
+                  <CardDescription className="mt-0.5">Remaining days per employee</CardDescription>
+                </div>
+                <Button size="sm" variant="outline" onClick={fetchTeamOverview} disabled={teamLoading}>
+                  <RefreshCw className={`h-3.5 w-3.5 ${teamLoading ? 'animate-spin' : ''}`} />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {teamLoading ? (
+                <div className="space-y-2">{[1,2,3].map((i) => <div key={i} className="h-10 rounded-xl bg-muted animate-pulse" />)}</div>
+              ) : teamOverview.length === 0 ? (
+                <Empty icon={Users} text="No team members found." />
+              ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b text-muted-foreground text-xs">
-                        <th className="text-left pb-2 pr-4 font-medium">Leave Type</th>
-                        <th className="text-left pb-2 pr-4 font-medium w-52">Display Label</th>
-                        <th className="text-center pb-2 px-4 font-medium w-28">Default Days</th>
-                        <th className="text-center pb-2 px-4 font-medium w-20">Active</th>
-                        <th className="text-center pb-2 px-4 font-medium w-20">Action</th>
+                        <th className="text-left pb-2 pr-4 font-medium">Employee</th>
+                        {policies.filter((p) => !p.isUnlimited && p.isActive).map((p) => (
+                          <th key={p.leaveType} className="text-center pb-2 px-2 font-medium">{p.label}</th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {policyDraft.map((p) => (
-                        <tr key={p.leaveType} className="border-b last:border-0">
-                          <td className="py-3 pr-4">
-                            <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-muted">
-                              {p.leaveType}
-                            </span>
-                          </td>
-                          <td className="py-3 pr-4">
-                            <Input
-                              value={p.label}
-                              onChange={(e) => updatePolicyDraft(p.leaveType, 'label', e.target.value)}
-                              className="h-8 text-sm w-48"
-                            />
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <Input
-                              type="number"
-                              min={0}
-                              value={p.defaultTotal}
-                              onChange={(e) =>
-                                updatePolicyDraft(p.leaveType, 'defaultTotal', Number(e.target.value))
-                              }
-                              className="h-8 text-sm w-20 mx-auto text-center"
-                            />
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <input
-                              type="checkbox"
-                              checked={p.isActive}
-                              onChange={(e) => updatePolicyDraft(p.leaveType, 'isActive', e.target.checked)}
-                              className="h-4 w-4 cursor-pointer accent-[#361963]"
-                            />
-                          </td>
-                          <td className="py-3 px-4 text-center">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
-                              onClick={() => handleDeletePolicy(p.id, p.leaveType)}
-                              title={`Delete ${p.leaveType}`}
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* ── Add New Leave Type ── */}
-                <div className="border rounded-lg p-4 bg-muted/20 space-y-3">
-                  <p className="text-xs font-medium text-muted-foreground">Add New Leave Type</p>
-                  <div className="flex flex-wrap gap-3 items-end">
-                    <div className="space-y-1">
-                      <Label className="text-xs">Type Code</Label>
-                      <Input
-                        placeholder="COMP_OFF"
-                        value={newLT.code}
-                        onChange={(e) => setNewLT((prev) => ({ ...prev, code: e.target.value }))}
-                        className="h-8 text-sm w-32 font-mono"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Label</Label>
-                      <Input
-                        placeholder="Compensatory Off"
-                        value={newLT.label}
-                        onChange={(e) => setNewLT((prev) => ({ ...prev, label: e.target.value }))}
-                        className="h-8 text-sm w-48"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs">Days</Label>
-                      <Input
-                        type="number"
-                        min={0}
-                        value={newLT.days}
-                        onChange={(e) => setNewLT((prev) => ({ ...prev, days: Number(e.target.value) }))}
-                        className="h-8 text-sm w-20 text-center"
-                      />
-                    </div>
-                    <Button
-                      size="sm"
-                      onClick={handleAddLeaveType}
-                      style={{ backgroundColor: '#361963' }}
-                      className="text-white h-8"
-                    >
-                      <Plus className="h-3.5 w-3.5 mr-1.5" />
-                      Add Type
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap gap-2 items-center">
-                  <Button
-                    onClick={handleSavePolicy}
-                    disabled={savingPolicy}
-                    style={{ backgroundColor: '#361963' }}
-                    className="text-white"
-                  >
-                    {savingPolicy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    Save Policy
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => setPolicyDraft(policies.map((p) => ({ ...p })))}
-                    disabled={savingPolicy}
-                  >
-                    Reset
-                  </Button>
-                  <div className="h-5 w-px bg-border mx-1" />
-                  <Button
-                    variant="outline"
-                    onClick={handleApplyToAll}
-                    disabled={savingPolicy}
-                    className="text-amber-700 border-amber-300 hover:bg-amber-50"
-                  >
-                    {savingPolicy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    Apply Defaults to All Employees
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground mt-1">
-                  "Save Policy" updates the policy config only. "Apply Defaults to All Employees" pushes the current default days to every employee's balance for {new Date().getFullYear()}.
-                </p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ── My Leave Balance Card ── */}
-      {balances.length > 0 && (
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="h-4 w-4" style={{ color: '#361963' }} />
-              <CardTitle className="text-base">My Leave Balance — {new Date().getFullYear()}</CardTitle>
-            </div>
-            <CardDescription>Allocated vs used days for this calendar year</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-              {policies.map((p) => ({ key: p.leaveType, label: p.label })).map(({ key, label }) => {
-                const b = balances.find((x) => x.leaveType === key);
-                if (!b) return null;
-                return <BalanceBar key={key} label={label} total={b.total} used={b.used} />;
-              })}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ── Team Balances Card (Manager/Admin) ── */}
-      {isManagerOrAdmin && showTeam && (
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="h-4 w-4" style={{ color: '#361963' }} />
-              <CardTitle className="text-base">Team Leave Balances — {new Date().getFullYear()}</CardTitle>
-            </div>
-            <CardDescription>
-              {isAdmin
-                ? 'Remaining days per employee. Click Edit to adjust individual quotas.'
-                : 'Remaining days per employee for this calendar year'}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {teamLoading ? (
-              <div className="flex justify-center py-4">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-              </div>
-            ) : teamError ? (
-              <p className="text-sm text-destructive py-4 text-center">{teamError}</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-muted-foreground text-xs">
-                      <th className="text-left pb-2 pr-4 font-medium">Employee</th>
-                      {policies.map((p) => p.leaveType).map((lt) => (
-                        <th key={lt} className="text-center pb-2 px-2 font-medium">
-                          {policies.find((p) => p.leaveType === lt)?.label ?? lt}
-                        </th>
-                      ))}
-                      {isAdmin && <th className="text-center pb-2 px-2 font-medium w-16">Edit</th>}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {teamOverview.map((u) => (
-                      <Fragment key={u.id}>
-                        {/* ── Employee row ── */}
-                        <tr
-                          className={`border-b hover:bg-muted/20 ${
-                            editingUserId === u.id ? 'bg-muted/30' : ''
-                          }`}
-                        >
+                      {teamOverview.map((u) => (
+                        <tr key={u.id} className="border-b last:border-0 hover:bg-muted/20">
                           <td className="py-2.5 pr-4">
-                            <p className="font-medium">
-                              {u.profile?.firstName} {u.profile?.lastName}
-                            </p>
-                            <p className="text-xs text-muted-foreground font-mono">
-                              {u.profile?.employeeId}
-                            </p>
+                            <p className="font-medium">{u.profile?.firstName} {u.profile?.lastName}</p>
+                            <p className="text-xs text-muted-foreground font-mono">{u.profile?.employeeId}</p>
                           </td>
-                          {policies.map((p) => p.leaveType).map((lt) => {
-                            const b    = u.leaveBalances.find((x) => x.leaveType === lt);
+                          {policies.filter((p) => !p.isUnlimited && p.isActive).map((p) => {
+                            const b    = u.leaveBalances.find((x) => x.leaveType === p.leaveType);
                             const left = b ? Math.max(b.total - b.used, 0) : 0;
                             const isLow = b && left <= 2 && b.total > 0;
                             return (
-                              <td key={lt} className="text-center py-2.5 px-2">
-                                <span
-                                  className="text-xs font-semibold px-2 py-0.5 rounded-full"
-                                  style={{
-                                    backgroundColor: isLow ? '#fee2e2' : '#f3f0fa',
-                                    color:           isLow ? '#b91c1c' : '#361963',
-                                  }}
-                                >
+                              <td key={p.leaveType} className="text-center py-2.5 px-2">
+                                <span className="text-xs font-semibold px-2 py-0.5 rounded-full"
+                                  style={{ backgroundColor: isLow ? '#fee2e2' : '#f3f0fa', color: isLow ? '#b91c1c' : '#361963' }}>
                                   {left}/{b?.total ?? 0}
                                 </span>
                               </td>
                             );
                           })}
-                          {isAdmin && (
-                            <td className="text-center py-2.5 px-2">
-                              {editingUserId === u.id ? (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-7 px-2 text-muted-foreground"
-                                  onClick={() => setEditingUserId(null)}
-                                >
-                                  <X className="h-3 w-3" />
-                                </Button>
-                              ) : (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-7 px-2"
-                                  onClick={() => openQuotaEdit(u)}
-                                >
-                                  <Pencil className="h-3 w-3" />
-                                </Button>
-                              )}
-                            </td>
-                          )}
                         </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
-                        {/* ── Inline quota editor row (admin only) ── */}
-                        {isAdmin && editingUserId === u.id && (
-                          <tr key={u.id + '-edit'} className="border-b bg-muted/10">
+          {/* Team leave requests */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">
+                {isAdmin ? 'All Leave Requests' : 'Team Leave Requests'}
+              </CardTitle>
+              <CardDescription>
+                {isAdmin ? 'All pending and past leave requests' : 'Requests from your direct reports'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {loading ? (
+                <div className="space-y-2">{[1,2,3].map((i) => <div key={i} className="h-16 rounded-xl bg-muted animate-pulse" />)}</div>
+              ) : teamLeaves.length === 0 ? (
+                <Empty icon={CalendarDays} text="No team leave requests." />
+              ) : (
+                <div className="space-y-3">
+                  {teamLeaves.map((leave) => (
+                    <LeaveRow
+                      key={leave.id} leave={leave}
+                      showEmployee={true}
+                      canAction={leave.status === 'PENDING'}
+                      canWithdraw={false}
+                      actionLoading={actionLoading}
+                      onApprove={handleApprove}
+                      onRejectClick={(id) => { setRejectId(id); setRejectComment(''); }}
+                      onWithdraw={handleWithdraw}
+                      isAdmin={isAdmin}
+                      onChangeType={handleChangeType}
+                      policies={policies}
+                    />
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ── TAB: MANAGE (Admin only) ────────────────────────────────────────── */}
+      {tab === 'manage' && isAdmin && (
+        <div className="space-y-5">
+
+          {/* Leave Policy table */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-2">
+                <Settings2 className="h-4 w-4" style={{ color: '#361963' }} />
+                <CardTitle className="text-base">Leave Policy Configuration</CardTitle>
+              </div>
+              <CardDescription>
+                Set org-wide defaults and toggle leave categories. Use "Apply Defaults to All" to push defaults to every employee's balance.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {policyDraft.length === 0 ? (
+                <div className="flex justify-center py-6"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-muted-foreground text-xs">
+                          <th className="text-left pb-2 pr-4 font-medium">Code</th>
+                          <th className="text-left pb-2 pr-4 font-medium w-52">Label</th>
+                          <th className="text-center pb-2 px-4 font-medium w-28">Default Days</th>
+                          <th className="text-center pb-2 px-4 font-medium w-24">Unlimited</th>
+                          <th className="text-center pb-2 px-4 font-medium w-20">Active</th>
+                          <th className="text-center pb-2 px-4 font-medium w-20">Delete</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {policyDraft.map((p) => (
+                          <tr key={p.leaveType} className="border-b last:border-0">
                             <td className="py-3 pr-4">
-                              <p className="text-xs font-medium text-muted-foreground">
-                                Set quotas for {u.profile?.firstName}
-                              </p>
+                              <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-muted">{p.leaveType}</span>
                             </td>
-                            {policies.map((p) => p.leaveType).map((lt) => (
-                              <td key={lt} className="py-3 px-2">
-                                <Input
-                                  type="number"
-                                  min={0}
-                                  value={quotaDraft[lt] ?? 0}
-                                  onChange={(e) =>
-                                    setQuotaDraft((prev) => ({ ...prev, [lt]: Number(e.target.value) }))
-                                  }
-                                  className="h-7 text-xs text-center w-16 mx-auto px-1"
-                                />
-                              </td>
-                            ))}
-                            <td className="py-3 px-2 text-center">
-                              <Button
-                                size="sm"
-                                disabled={savingQuota}
-                                style={{ backgroundColor: '#361963' }}
-                                className="text-white h-7 px-2"
-                                onClick={() => handleSaveQuota(u.id)}
-                              >
-                                {savingQuota
-                                  ? <Loader2 className="h-3 w-3 animate-spin" />
-                                  : <Check className="h-3 w-3" />}
-                              </Button>
+                            <td className="py-3 pr-4">
+                              <Input value={p.label} onChange={(e) => updatePolicyDraft(p.leaveType, 'label', e.target.value)} className="h-8 text-sm w-48" />
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              {p.isUnlimited
+                                ? <span className="text-xs text-muted-foreground">—</span>
+                                : <Input type="number" min={0} value={p.defaultTotal} onChange={(e) => updatePolicyDraft(p.leaveType, 'defaultTotal', Number(e.target.value))} className="h-8 text-sm w-20 mx-auto text-center" />
+                              }
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <span className={`text-xs px-2 py-0.5 rounded-full ${p.isUnlimited ? 'bg-purple-50 text-purple-700' : 'bg-gray-100 text-gray-500'}`}>
+                                {p.isUnlimited ? 'Yes' : 'No'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <input type="checkbox" checked={p.isActive} onChange={(e) => updatePolicyDraft(p.leaveType, 'isActive', e.target.checked)} className="h-4 w-4 accent-[#361963]" />
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <button onClick={() => handleDeletePolicy(p.id, p.leaveType)} className="text-muted-foreground hover:text-destructive transition-colors">
+                                <Trash2 className="h-4 w-4" />
+                              </button>
                             </td>
                           </tr>
-                        )}
-                      </Fragment>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ── Apply Leave Form ── */}
-      {showForm && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">New Leave Application</CardTitle>
-            <CardDescription>Submit a leave request for your manager's review</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-
-              {/* Row 1 — Leave Type + Duration toggle */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="leaveType">Leave Type</Label>
-                  <select
-                    id="leaveType"
-                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                    {...register('leaveType')}
-                  >
-                    <option value="">— Select type —</option>
-                    {leaveTypesForForm.map((t) => (
-                      <option key={t.leaveType} value={t.leaveType}>{t.label}</option>
-                    ))}
-                  </select>
-                  {errors.leaveType && <p className="text-xs text-destructive">{errors.leaveType.message}</p>}
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Leave Duration</Label>
-                  <div className="flex gap-1 p-1 rounded-lg bg-muted w-fit">
-                    {(['SINGLE', 'MULTIPLE'] as const).map((dt) => (
-                      <button
-                        key={dt}
-                        type="button"
-                        onClick={() => setValue('durationType', dt, { shouldValidate: true })}
-                        className="px-4 py-1.5 rounded-md text-sm font-medium transition-all"
-                        style={durationType === dt
-                          ? { backgroundColor: '#361963', color: '#fff' }
-                          : { color: '#361963' }}
-                      >
-                        {dt === 'SINGLE' ? 'Single Day' : 'Multiple Days'}
-                      </button>
-                    ))}
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                  {errors.durationType && <p className="text-xs text-destructive">{errors.durationType.message}</p>}
-                </div>
-              </div>
 
-              {/* Row 2 — Date inputs (conditional on duration type) */}
-              {durationType === 'SINGLE' ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="singleDate">Date</Label>
-                    <Input id="singleDate" type="date" {...register('singleDate')} />
-                    {errors.singleDate && <p className="text-xs text-destructive">{errors.singleDate.message}</p>}
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="singleDayType">Session</Label>
-                    <select
-                      id="singleDayType"
-                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
-                      {...register('singleDayType')}
-                    >
-                      <option value="FULL">Full Day</option>
-                      <option value="FIRST_HALF">1st Half (Morning)</option>
-                      <option value="SECOND_HALF">2nd Half (Afternoon)</option>
-                    </select>
-                    {errors.singleDayType && <p className="text-xs text-destructive">{errors.singleDayType.message}</p>}
-                  </div>
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Start */}
-                  <div className="space-y-2">
-                    <Label htmlFor="startDate">Start Date</Label>
-                    <div className="flex gap-2">
-                      <Input id="startDate" type="date" className="flex-1" {...register('startDate')} />
-                      <select
-                        className="flex h-10 rounded-md border border-input bg-background px-2 py-2 text-sm w-44"
-                        {...register('startDayType')}
-                      >
-                        <option value="FULL">Full Day</option>
-                        <option value="FROM_SECOND_HALF">From 2nd Half</option>
-                      </select>
+                  {/* Add new leave type */}
+                  <div className="border-t pt-4">
+                    <p className="text-xs font-medium text-muted-foreground mb-2">Add New Leave Type</p>
+                    <div className="flex flex-wrap gap-2 items-end">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Code</Label>
+                        <Input placeholder="e.g. ML" value={newLT.code} onChange={(e) => setNewLT((v) => ({ ...v, code: e.target.value }))} className="h-8 w-24 text-sm uppercase" />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Label</Label>
+                        <Input placeholder="e.g. Maternity Leave" value={newLT.label} onChange={(e) => setNewLT((v) => ({ ...v, label: e.target.value }))} className="h-8 w-44 text-sm" />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Default Days (0 = unlimited)</Label>
+                        <Input type="number" min={0} value={newLT.days} onChange={(e) => setNewLT((v) => ({ ...v, days: Number(e.target.value) }))} className="h-8 w-24 text-sm" />
+                      </div>
+                      <Button size="sm" variant="outline" onClick={handleAddLeaveType}>
+                        <Plus className="h-3.5 w-3.5 mr-1" /> Add
+                      </Button>
                     </div>
-                    {(errors.startDate || errors.startDayType) && (
-                      <p className="text-xs text-destructive">
-                        {errors.startDate?.message || errors.startDayType?.message}
-                      </p>
-                    )}
                   </div>
-                  {/* End */}
-                  <div className="space-y-2">
-                    <Label htmlFor="endDate">End Date</Label>
-                    <div className="flex gap-2">
-                      <Input id="endDate" type="date" className="flex-1" {...register('endDate')} />
-                      <select
-                        className="flex h-10 rounded-md border border-input bg-background px-2 py-2 text-sm w-44"
-                        {...register('endDayType')}
-                      >
-                        <option value="FULL">Full Day</option>
-                        <option value="UNTIL_FIRST_HALF">Until 1st Half</option>
-                      </select>
-                    </div>
-                    {(errors.endDate || errors.endDayType) && (
-                      <p className="text-xs text-destructive">
-                        {errors.endDate?.message || errors.endDayType?.message}
-                      </p>
-                    )}
+
+                  {/* Action buttons */}
+                  <div className="flex flex-wrap items-center gap-2 border-t pt-4">
+                    <Button size="sm" onClick={handleSavePolicy} disabled={savingPolicy} style={{ backgroundColor: '#361963' }} className="text-white">
+                      {savingPolicy && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                      Save Policy
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setPolicyDraft(policies.map((p) => ({ ...p })))} disabled={savingPolicy}>
+                      Reset
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={handleApplyToAll} disabled={applyingAll || savingPolicy} className="text-amber-700 border-amber-300 hover:bg-amber-50">
+                      {applyingAll && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                      Apply Defaults to All Employees
+                    </Button>
                   </div>
-                </div>
-              )}
-
-              {/* Row 3 — Reason (always shown) */}
-              <div className="space-y-2">
-                <Label htmlFor="reason">Reason</Label>
-                <Input id="reason" placeholder="Brief reason for leave..." {...register('reason')} />
-                {errors.reason && <p className="text-xs text-destructive">{errors.reason.message}</p>}
-              </div>
-
-              <div className="flex gap-2">
-                <Button type="submit" disabled={isSubmitting} style={{ backgroundColor: '#361963' }} className="text-white">
-                  {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                  Submit Application
-                </Button>
-                <Button type="button" variant="outline" onClick={() => { setShowForm(false); reset(); }}>
-                  Cancel
-                </Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ── Leave Request List ── */}
-      {loading ? (
-        <Card>
-          <CardContent className="flex justify-center py-8">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </CardContent>
-        </Card>
-      ) : user?.role === 'MANAGER' ? (
-        /* ── Manager: split into own leaves + team requests ── */
-        <>
-          {/* My Leave Requests */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <CalendarDays className="h-4 w-4" />
-                <CardTitle className="text-base">My Leave Requests</CardTitle>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {leaves.filter((l) => l.employeeId === user.id).length === 0 ? (
-                <p className="text-center text-muted-foreground py-6">You haven't submitted any leave requests.</p>
-              ) : (
-                <div className="space-y-3">
-                  {leaves
-                    .filter((l) => l.employeeId === user.id)
-                    .map((leave) => (
-                      <LeaveRow
-                        key={leave.id}
-                        leave={leave}
-                        showEmployee={false}
-                        canAction={false}
-                        canWithdraw={leave.status === 'PENDING' && leave.employeeId === user.id}
-                        actionLoading={actionLoading}
-                        onApprove={handleApprove}
-                        onReject={handleReject}
-                        onWithdraw={handleWithdraw}
-                        isAdmin={false}
-                        onChangeType={handleChangeType}
-                        policies={policies}
-                      />
-                    ))}
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* Team Leave Requests */}
+          {/* FY Rollover */}
           <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="h-4 w-4" />
-                <CardTitle className="text-base">Team Leave Requests</CardTitle>
-              </div>
-              <CardDescription>Leave requests submitted by your direct reports</CardDescription>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Year-End FY Reset</CardTitle>
+              <CardDescription>
+                Carry forward unused Paid Leave to the new financial year. Run this once at the start of each FY (April 1).
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              {leaves.filter((l) => l.employeeId !== user.id).length === 0 ? (
-                <p className="text-center text-muted-foreground py-6">No team leave requests found.</p>
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">From FY</Label>
+                  <Input type="number" value={fyFrom} onChange={(e) => setFyFrom(Number(e.target.value))} className="h-8 w-24 text-sm" />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">To FY</Label>
+                  <Input type="number" value={fyTo} onChange={(e) => setFyTo(Number(e.target.value))} className="h-8 w-24 text-sm" />
+                </div>
+                <Button size="sm" variant="outline" onClick={handleFYReset} disabled={resettingFY} className="text-amber-700 border-amber-300 hover:bg-amber-50">
+                  {resettingFY && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                  Run FY Reset
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Per-employee quota overrides */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Individual Quota Overrides</CardTitle>
+              <CardDescription>Adjust specific employees' annual leave quota (e.g. someone earning extra days)</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {teamLoading ? (
+                <div className="space-y-2">{[1,2,3].map((i) => <div key={i} className="h-10 rounded-xl bg-muted animate-pulse" />)}</div>
+              ) : teamOverview.length === 0 ? (
+                <Empty icon={Users} text="No employees found." />
               ) : (
-                <div className="space-y-3">
-                  {leaves
-                    .filter((l) => l.employeeId !== user.id)
-                    .map((leave) => (
-                      <LeaveRow
-                        key={leave.id}
-                        leave={leave}
-                        showEmployee={true}
-                        canAction={leave.status === 'PENDING'}
-                        canWithdraw={false}
-                        actionLoading={actionLoading}
-                        onApprove={handleApprove}
-                        onReject={handleReject}
-                        onWithdraw={handleWithdraw}
-                        isAdmin={false}
-                        onChangeType={handleChangeType}
-                        policies={policies}
-                      />
-                    ))}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-muted-foreground text-xs">
+                        <th className="text-left pb-2 pr-4 font-medium">Employee</th>
+                        {policies.filter((p) => !p.isUnlimited && p.isActive).map((p) => (
+                          <th key={p.leaveType} className="text-center pb-2 px-2 font-medium">{p.label}</th>
+                        ))}
+                        <th className="text-center pb-2 px-2 font-medium w-16">Edit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {teamOverview.map((u) => (
+                        <Fragment key={u.id}>
+                          <tr className={`border-b ${editingUserId === u.id ? 'bg-muted/30' : 'hover:bg-muted/20'}`}>
+                            <td className="py-2.5 pr-4">
+                              <p className="font-medium">{u.profile?.firstName} {u.profile?.lastName}</p>
+                              <p className="text-xs text-muted-foreground font-mono">{u.profile?.employeeId}</p>
+                            </td>
+                            {policies.filter((p) => !p.isUnlimited && p.isActive).map((p) => {
+                              const b    = u.leaveBalances.find((x) => x.leaveType === p.leaveType);
+                              const left = b ? Math.max(b.total - b.used, 0) : 0;
+                              return (
+                                <td key={p.leaveType} className="text-center py-2.5 px-2">
+                                  <span className="text-xs" style={{ color: '#361963' }}>{left}/{b?.total ?? 0}</span>
+                                </td>
+                              );
+                            })}
+                            <td className="text-center py-2.5 px-2">
+                              {editingUserId === u.id ? (
+                                <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => setEditingUserId(null)}><X className="h-3 w-3" /></Button>
+                              ) : (
+                                <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => openQuotaEdit(u)}><Pencil className="h-3 w-3" /></Button>
+                              )}
+                            </td>
+                          </tr>
+                          {editingUserId === u.id && (
+                            <tr className="border-b bg-muted/10">
+                              <td className="py-3 pr-4">
+                                <p className="text-xs font-medium text-muted-foreground">Set quotas for {u.profile?.firstName}</p>
+                              </td>
+                              {policies.filter((p) => !p.isUnlimited && p.isActive).map((p) => (
+                                <td key={p.leaveType} className="py-3 px-2">
+                                  <Input type="number" min={0} value={quotaDraft[p.leaveType] ?? 0}
+                                    onChange={(e) => setQuotaDraft((prev) => ({ ...prev, [p.leaveType]: Number(e.target.value) }))}
+                                    className="h-7 text-xs text-center w-16 mx-auto px-1" />
+                                </td>
+                              ))}
+                              <td className="py-3 px-2 text-center">
+                                <Button size="sm" disabled={savingQuota} style={{ backgroundColor: '#361963' }} className="text-white h-7 px-2" onClick={() => handleSaveQuota(u.id)}>
+                                  {savingQuota ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+                                </Button>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </CardContent>
           </Card>
-        </>
-      ) : (
-        /* ── Employee / Admin: single list ── */
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <CalendarDays className="h-4 w-4" />
-              <CardTitle className="text-base">
-                {isAdmin ? 'All Leave Requests' : 'My Leave Requests'}
-              </CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {leaves.length === 0 ? (
-              <p className="text-center text-muted-foreground py-8">No leave requests found.</p>
-            ) : (
-              <div className="space-y-3">
-                {leaves.map((leave) => (
-                  <LeaveRow
-                    key={leave.id}
-                    leave={leave}
-                    showEmployee={isAdmin}
-                    canAction={isAdmin && leave.status === 'PENDING'}
-                    canWithdraw={!isAdmin && leave.status === 'PENDING' && leave.employeeId === user?.id}
-                    actionLoading={actionLoading}
-                    onApprove={handleApprove}
-                    onReject={handleReject}
-                    onWithdraw={handleWithdraw}
-                    isAdmin={isAdmin}
-                    onChangeType={handleChangeType}
-                    policies={policies}
-                  />
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        </div>
       )}
     </div>
   );
 }
 
-// ─── Shared leave row sub-component ──────────────────────────────────────────
+// ─── LeaveRow sub-component ───────────────────────────────────────────────────
 
 function LeaveRow({
-  leave,
-  showEmployee,
-  canAction,
-  canWithdraw,
-  actionLoading,
-  onApprove,
-  onReject,
-  onWithdraw,
-  isAdmin,
-  onChangeType,
-  policies,
+  leave, showEmployee, canAction, canWithdraw, actionLoading,
+  onApprove, onRejectClick, onWithdraw, isAdmin, onChangeType, policies,
 }: {
   leave:         LeaveRequest;
   showEmployee:  boolean;
@@ -1047,37 +981,34 @@ function LeaveRow({
   canWithdraw:   boolean;
   actionLoading: string | null;
   onApprove:     (id: string) => void;
-  onReject:      (id: string) => void;
+  onRejectClick: (id: string) => void;
   onWithdraw:    (id: string) => void;
   isAdmin:       boolean;
   onChangeType:  (id: string, newType: string) => void;
   policies:      LeavePolicy[];
 }) {
   const [showTypeChange, setShowTypeChange] = useState(false);
-  const [selectedType, setSelectedType]     = useState(leave.leaveType);
-
+  const [selectedType,   setSelectedType]   = useState(leave.leaveType);
   const canChangeType = isAdmin && leave.status === 'PENDING';
 
   const handleSaveType = () => {
-    if (selectedType !== leave.leaveType) {
-      onChangeType(leave.id, selectedType);
-    }
+    if (selectedType !== leave.leaveType) onChangeType(leave.id, selectedType);
     setShowTypeChange(false);
   };
 
+  const policyLabel = (lt: string) => policies.find((p) => p.leaveType === lt)?.label ?? lt;
+
   return (
-    <div className="flex items-start justify-between p-4 border rounded-lg gap-4">
-      <div className="flex-1">
+    <div className="flex items-start justify-between p-4 border rounded-xl gap-4">
+      <div className="flex-1 min-w-0">
         {showEmployee && leave.employee?.profile && (
           <p className="text-sm font-medium mb-1">
             {leave.employee.profile.firstName} {leave.employee.profile.lastName}
-            <span className="text-muted-foreground text-xs ml-2 font-mono">
-              {leave.employee.profile.employeeId}
-            </span>
+            <span className="text-muted-foreground text-xs ml-2 font-mono">{leave.employee.profile.employeeId}</span>
           </p>
         )}
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-sm font-semibold">{leave.leaveType}</span>
+          <span className="text-sm font-semibold">{policyLabel(leave.leaveType)}</span>
           <span className="text-muted-foreground text-sm">
             {leave.durationType === 'SINGLE' ? (
               <>
@@ -1091,124 +1022,60 @@ function LeaveRow({
             ) : (
               <>
                 {formatDate(leave.startDate)}
-                {leave.startDayType === 'FROM_SECOND_HALF' && (
-                  <span className="ml-0.5 text-xs text-[#361963]"> (from 2nd half)</span>
-                )}
+                {leave.startDayType === 'FROM_SECOND_HALF' && <span className="ml-0.5 text-xs text-[#361963]"> (from 2nd half)</span>}
                 {' — '}
                 {formatDate(leave.endDate)}
-                {leave.endDayType === 'UNTIL_FIRST_HALF' && (
-                  <span className="ml-0.5 text-xs text-[#361963]"> (until 1st half)</span>
-                )}
+                {leave.endDayType === 'UNTIL_FIRST_HALF' && <span className="ml-0.5 text-xs text-[#361963]"> (until 1st half)</span>}
               </>
             )}
-            <span className="ml-1">
-              ({leave.totalDays === 0.5
-                ? '½ day'
-                : `${leave.totalDays} day${leave.totalDays !== 1 ? 's' : ''}`})
-            </span>
+            <span className="ml-1">({leave.totalDays === 0.5 ? '½ day' : `${leave.totalDays} day${leave.totalDays !== 1 ? 's' : ''}`})</span>
           </span>
         </div>
-        <p className="text-sm text-muted-foreground mt-1">{leave.reason}</p>
+        <p className="text-sm text-muted-foreground mt-1 truncate">{leave.reason}</p>
         {leave.status === 'REJECTED' && leave.managerComment && (
-          <p className="text-xs text-rose-600 mt-1 italic font-medium">
-            Rejection reason: {leave.managerComment}
-          </p>
-        )}
-        {leave.status !== 'REJECTED' && leave.managerComment && leave.managerComment !== 'Approved' && (
-          <p className="text-xs text-muted-foreground mt-1 italic">
-            Note: {leave.managerComment}
-          </p>
+          <p className="text-xs text-rose-600 mt-1 italic font-medium">Rejection reason: {leave.managerComment}</p>
         )}
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
-        <span className={`text-xs font-medium px-2 py-1 rounded-full ${leaveStatusColor(leave.status)}`}>
-          {leave.status}
-        </span>
-        {/* Admin: change leave type inline */}
+        <span className={`text-xs font-medium px-2 py-1 rounded-full ${leaveStatusColor(leave.status)}`}>{leave.status}</span>
+
         {canChangeType && !showTypeChange && (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="text-muted-foreground hover:text-[#361963] px-2"
-            title="Change leave type"
-            onClick={() => { setSelectedType(leave.leaveType); setShowTypeChange(true); }}
-            disabled={!!actionLoading}
-          >
+          <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-[#361963] px-2" title="Change leave type"
+            onClick={() => { setSelectedType(leave.leaveType); setShowTypeChange(true); }} disabled={!!actionLoading}>
             <ArrowLeftRight className="h-3.5 w-3.5" />
           </Button>
         )}
         {canChangeType && showTypeChange && (
           <div className="flex items-center gap-1.5">
-            <select
-              value={selectedType}
-              onChange={(e) => setSelectedType(e.target.value)}
-              className="text-xs border border-input rounded-md px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-ring"
-            >
-              {policies.filter((p) => p.isActive).map((p) => (
-                <option key={p.leaveType} value={p.leaveType}>{p.label}</option>
-              ))}
+            <select value={selectedType} onChange={(e) => setSelectedType(e.target.value)}
+              className="text-xs border border-input rounded-md px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-ring">
+              {policies.filter((p) => p.isActive).map((p) => <option key={p.leaveType} value={p.leaveType}>{p.label}</option>)}
             </select>
-            <Button
-              size="sm"
-              variant="outline"
-              className="px-2 text-[#361963] border-[#361963]/40 hover:bg-[#361963]/5"
-              onClick={handleSaveType}
-              disabled={actionLoading === leave.id + '-changetype' || selectedType === leave.leaveType}
-              title="Save type change"
-            >
-              {actionLoading === leave.id + '-changetype'
-                ? <Loader2 className="h-3 w-3 animate-spin" />
-                : <Check className="h-3 w-3" />}
+            <Button size="sm" variant="outline" className="px-2 text-[#361963] border-[#361963]/40"
+              onClick={handleSaveType} disabled={actionLoading === leave.id + '-changetype' || selectedType === leave.leaveType}>
+              {actionLoading === leave.id + '-changetype' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
             </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="px-2 text-muted-foreground"
-              onClick={() => setShowTypeChange(false)}
-              title="Cancel"
-            >
+            <Button size="sm" variant="ghost" className="px-2 text-muted-foreground" onClick={() => setShowTypeChange(false)}>
               <X className="h-3 w-3" />
             </Button>
           </div>
         )}
+
         {canAction && (
           <>
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-green-600 border-green-300 hover:bg-green-50"
-              onClick={() => onApprove(leave.id)}
-              disabled={!!actionLoading}
-            >
-              {actionLoading === leave.id + '-approve'
-                ? <Loader2 className="h-3 w-3 animate-spin" />
-                : <Check className="h-3 w-3" />}
+            <Button size="sm" variant="outline" className="text-green-600 border-green-300 hover:bg-green-50" onClick={() => onApprove(leave.id)} disabled={!!actionLoading}>
+              {actionLoading === leave.id + '-approve' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="text-destructive border-destructive/30 hover:bg-destructive/10"
-              onClick={() => onReject(leave.id)}
-              disabled={!!actionLoading}
-            >
-              {actionLoading === leave.id + '-reject'
-                ? <Loader2 className="h-3 w-3 animate-spin" />
-                : <X className="h-3 w-3" />}
+            <Button size="sm" variant="outline" className="text-destructive border-destructive/30 hover:bg-destructive/10" onClick={() => onRejectClick(leave.id)} disabled={!!actionLoading}>
+              {actionLoading === leave.id + '-reject' ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
             </Button>
           </>
         )}
+
         {canWithdraw && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="text-destructive border-destructive/30 hover:bg-destructive/10"
-            onClick={() => onWithdraw(leave.id)}
-            disabled={actionLoading === leave.id + '-withdraw'}
-            title="Withdraw request"
-          >
-            {actionLoading === leave.id + '-withdraw'
-              ? <Loader2 className="h-3 w-3 animate-spin" />
-              : <Trash2 className="h-3 w-3" />}
+          <Button size="sm" variant="outline" className="text-destructive border-destructive/30 hover:bg-destructive/10"
+            onClick={() => onWithdraw(leave.id)} disabled={actionLoading === leave.id + '-withdraw'} title="Withdraw request">
+            {actionLoading === leave.id + '-withdraw' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
           </Button>
         )}
       </div>

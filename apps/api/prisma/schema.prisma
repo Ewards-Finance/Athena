@@ -13,6 +13,7 @@ model User {
   password          String
   role              Role               @default(EMPLOYEE)
   isActive          Boolean            @default(true)
+  employmentStatus  EmploymentStatus   @default(REGULAR_FULL_TIME)
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   attendanceRecords AttendanceRecord[]
@@ -25,12 +26,19 @@ model User {
   punchMapping      PunchMapping?
   claims            Reimbursement[]
   workLogs          WorkLog[]
+  auditLogs         AuditLog[]
+  salaryRevisions      SalaryRevision[]
+  salaryRevisionsBy    SalaryRevision[]      @relation("SalaryRevisor")
+  documents            EmployeeDocument[]
+  absenceRecords       AbsenceRecord[]
+  attendanceAdjustments AttendanceAdjustment[]
 }
 
 model Profile {
   id                   String    @id @default(cuid())
   userId               String    @unique
   firstName            String
+  middleName           String?
   lastName             String
   dateOfBirth          DateTime?
   gender               String?
@@ -124,6 +132,7 @@ model LeavePolicy {
   label        String
   defaultTotal Int
   isActive     Boolean  @default(true)
+  isUnlimited  Boolean  @default(false) // true for TEMPORARY_WFH and TRAVELLING — no balance tracking
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
@@ -311,9 +320,134 @@ enum CalcType {
   FIXED
   MANUAL
   AUTO_PT
+  AUTO_TDS
 }
 
 enum PayrollStatus {
   DRAFT
   FINALIZED
+}
+
+enum EmploymentStatus {
+  PENDING_JOIN
+  PROBATION
+  INTERNSHIP
+  REGULAR_FULL_TIME
+  NOTICE_PERIOD
+  INACTIVE
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String
+  action    String
+  entity    String
+  entityId  String?
+  subjectEntity String?
+  subjectId     String?
+  subjectLabel  String?
+  subjectMeta   Json?
+  oldValues Json?
+  newValues Json?
+  createdAt DateTime @default(now())
+  actor     User     @relation(fields: [actorId], references: [id])
+}
+
+model SystemSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
+model SalaryRevision {
+  id            String   @id @default(cuid())
+  userId        String
+  effectiveDate DateTime
+  oldCtc        Float
+  newCtc        Float
+  reason        String?
+  revisedBy     String
+  createdAt     DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  revisor       User     @relation("SalaryRevisor", fields: [revisedBy], references: [id])
+}
+
+model EmployeeDocument {
+  id          String      @id @default(cuid())
+  userId      String
+  category    DocCategory @default(OTHER)
+  name        String
+  fileUrl     String
+  description String?
+  uploadedBy  String
+  createdAt   DateTime    @default(now())
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+enum DocCategory {
+  OFFER_LETTER
+  APPOINTMENT_LETTER
+  EXPERIENCE_LETTER
+  KYC
+  CONTRACT
+  PAYSLIP
+  OTHER
+}
+
+model AbsenceRecord {
+  id        String   @id @default(cuid())
+  userId    String
+  date      DateTime
+  markedBy  String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+}
+
+// ─── Attendance Adjustment ────────────────────────────────────────────────────
+// HR Admin can set a per-employee per-month adjustment to correct attendance
+// before payroll is run. Positive = add present days (reduces LWP),
+// Negative = add absent/LWP days (increases LWP).
+// Example: employee punched in on a day with no fingerprint data → HR adds +1.
+// Applied in payroll run creation: final_lwp = computed_lwp - adjustmentDays.
+model ApiKey {
+  id          String    @id @default(cuid())
+  name        String
+  keyHash     String    @unique // SHA-256 hash of the full key
+  prefix      String    @unique // first 12 chars displayed in UI, used for lookup
+  createdBy   String
+  isActive    Boolean   @default(true)
+  scopes      Json
+  expiresAt   DateTime?
+  lastUsedAt  DateTime?
+  createdAt   DateTime  @default(now())
+}
+
+model BackupLog {
+  id          String   @id @default(cuid())
+  triggeredBy String   // "SCHEDULED" or userId
+  status      String   // "RUNNING" | "SUCCESS" | "FAILED"
+  fileName    String?
+  commitSha   String?
+  fileSizeKb  Int?
+  error       String?
+  createdAt   DateTime @default(now())
+}
+
+model AttendanceAdjustment {
+  id             String   @id @default(cuid())
+  userId         String
+  month          Int
+  year           Int
+  adjustmentDays Float    // +ve = reduce LWP (employee worked more than recorded), -ve = add LWP
+  reason         String?
+  createdBy      String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, month, year])
 }

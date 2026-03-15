@@ -22,6 +22,11 @@ import MyPayslips         from '@/pages/MyPayslips';
 import Attendance         from '@/pages/Attendance';
 import Worklogs           from '@/pages/Worklogs';
 import NotFound           from '@/pages/NotFound';
+import AuditLogs          from '@/pages/AuditLogs';
+import Settings           from '@/pages/Settings';
+import Reports            from '@/pages/Reports';
+import Documents          from '@/pages/Documents';
+import Search            from '@/pages/Search';
 
 // ProtectedRoute: wraps routes that require login
 // If user is not authenticated, redirects to /login
@@ -72,12 +77,23 @@ export default function App() {
             {/* All roles: own payslips */}
             <Route path="/payroll/my-payslips" element={<MyPayslips />} />
 
+            {/* All roles: documents vault */}
+            <Route path="/documents"             element={<Documents />} />
+
+            {/* All roles: search */}
+            <Route path="/search"                element={<Search />} />
+
+            {/* All roles: reports (Daily Attendance visible to all) */}
+            <Route path="/reports"               element={<Reports />} />
+
             {/* Admin-only routes */}
             <Route element={<AdminRoute />}>
               <Route path="/organization"        element={<Organization />} />
               <Route path="/payroll/runs"         element={<PayrollRuns />} />
               <Route path="/payroll/runs/:id"     element={<PayrollRunDetail />} />
               <Route path="/payroll/setup"        element={<PayrollSetup />} />
+              <Route path="/audit-logs"            element={<AuditLogs />} />
+              <Route path="/settings"              element={<Settings />} />
             </Route>
           </Route>
         </Route>

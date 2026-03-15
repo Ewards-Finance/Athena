@@ -10,6 +10,8 @@ import { Router, Response }         from 'express';
 import { PrismaClient }             from '@prisma/client';
 import { z }                        from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
+import { currentFYYear } from '../lib/fyUtils';
+import { createNotification }       from '../lib/notify';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -23,7 +25,7 @@ const setBalanceSchema = z.object({
 
 // GET /api/leave-balance/overview?year=2026 — all employees' balances (Admin/Manager)
 router.get('/overview', authorize(['ADMIN', 'MANAGER']), async (req: AuthRequest, res: Response) => {
-  const year = Number(req.query.year) || new Date().getFullYear();
+  const year = Number(req.query.year) || currentFYYear();
   try {
     // Two separate plain queries — avoids any relation-include issues with Prisma client
     // Managers only see their direct reports; Admins see everyone
@@ -68,13 +70,13 @@ router.get('/overview', authorize(['ADMIN', 'MANAGER']), async (req: AuthRequest
     res.json(result);
   } catch (err) {
     console.error('Overview error:', err);
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// GET /api/leave-balance — own balances for current year
+// GET /api/leave-balance — own balances for current FY
 router.get('/', async (req: AuthRequest, res: Response) => {
-  const year = new Date().getFullYear();
+  const year = currentFYYear();
   try {
     const balances = await getOrCreateBalances(req.user!.id, year);
     res.json(balances);
@@ -87,7 +89,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 // GET /api/leave-balance/:userId — Admin/Manager views any user's balance
 router.get('/:userId', authorize(['ADMIN', 'MANAGER']), async (req: AuthRequest, res: Response) => {
   const { userId } = req.params;
-  const year = Number(req.query.year) || new Date().getFullYear();
+  const year = Number(req.query.year) || currentFYYear();
   try {
     const balances = await getOrCreateBalances(userId, year);
     res.json(balances);
@@ -123,6 +125,86 @@ router.put('/:userId', authorize(['ADMIN']), async (req: AuthRequest, res: Respo
     res.json(results);
   } catch (err) {
     console.error('Set balance error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/leave-balance/reset-fy — Admin: carry-forward balances to a new FY
+// Body: { fromYear: 2024, toYear: 2025 }
+// For each active employee, unused balance from fromYear is added to toYear totals.
+router.post('/reset-fy', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  const parsed = z.object({
+    fromYear: z.number().int().min(2020).max(2100),
+    toYear:   z.number().int().min(2020).max(2100),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
+    return;
+  }
+  const { fromYear, toYear } = parsed.data;
+  if (toYear <= fromYear) {
+    res.status(400).json({ error: 'toYear must be greater than fromYear' });
+    return;
+  }
+
+  try {
+    const policies = await prisma.leavePolicy.findMany({ where: { isActive: true } });
+    if (policies.length === 0) {
+      res.status(400).json({ error: 'No active leave policies found' });
+      return;
+    }
+    const defaultTotals = Object.fromEntries(policies.map((p) => [p.leaveType, p.defaultTotal]));
+
+    const activeUsers = await prisma.user.findMany({
+      where:  { isActive: true },
+      select: { id: true },
+    });
+
+    let carried = 0;
+    let reset   = 0;
+
+    for (const u of activeUsers) {
+      // Get fromYear balances (carry-forward source)
+      const fromBalances = await prisma.leaveBalance.findMany({
+        where: { userId: u.id, year: fromYear },
+      });
+
+      for (const policy of policies) {
+        const fromBal   = fromBalances.find((b) => b.leaveType === policy.leaveType);
+        const remaining = fromBal ? Math.max(0, fromBal.total - fromBal.used) : 0;
+        const newTotal  = (defaultTotals[policy.leaveType] ?? 0) + remaining;
+
+        await prisma.leaveBalance.upsert({
+          where:  { userId_year_leaveType: { userId: u.id, year: toYear, leaveType: policy.leaveType } },
+          update: { total: newTotal },
+          create: { userId: u.id, year: toYear, leaveType: policy.leaveType, total: newTotal, used: 0 },
+        });
+
+        if (remaining > 0) carried++;
+        reset++;
+      }
+    }
+
+    // Notify all admins that reset is complete
+    const admins = await prisma.user.findMany({ where: { role: 'ADMIN', isActive: true }, select: { id: true } });
+    for (const admin of admins) {
+      await createNotification({
+        userId:  admin.id,
+        type:    'FY_RESET_DONE',
+        title:   'Leave Balance Reset Complete',
+        message: `FY ${fromYear}-${String(toYear).slice(-2)} → FY ${toYear}-${String(toYear + 1).slice(-2)} reset done. ${activeUsers.length} employees updated with carry-forward.`,
+        link:    '/organization',
+      });
+    }
+
+    res.json({
+      message:        `FY reset complete. ${activeUsers.length} employees processed.`,
+      employeesReset: activeUsers.length,
+      balancesReset:  reset,
+      carryForwards:  carried,
+    });
+  } catch (err) {
+    console.error('FY reset error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

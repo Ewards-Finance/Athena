@@ -86,6 +86,21 @@ export default function PayrollRuns() {
     }
   };
 
+  // Reopen finalized run
+  const [reopening, setReopening] = useState<string | null>(null);
+  const handleReopen = async (id: string, month: number, year: number) => {
+    if (!confirm(`Reopen ${MONTHS[month]} ${year} payroll run? It will go back to DRAFT and employees can no longer view it as finalized until you re-finalize.`)) return;
+    setReopening(id);
+    try {
+      await api.post(`/payroll/runs/${id}/reopen`);
+      fetchRuns();
+    } catch (err: any) {
+      alert(err?.response?.data?.error ?? 'Failed to reopen run.');
+    } finally {
+      setReopening(null);
+    }
+  };
+
   const currentYear = new Date().getFullYear();
   const yearOptions = Array.from({ length: 5 }, (_, i) => currentYear - 1 + i);
 
@@ -236,6 +251,15 @@ export default function PayrollRuns() {
                             className="text-xs text-red-400 hover:text-red-600 px-2 py-1 rounded"
                           >
                             Delete
+                          </button>
+                        )}
+                        {run.status === 'FINALIZED' && (
+                          <button
+                            disabled={reopening === run.id}
+                            onClick={() => handleReopen(run.id, run.month, run.year)}
+                            className="text-xs text-amber-600 hover:text-amber-800 px-2 py-1 rounded disabled:opacity-50"
+                          >
+                            {reopening === run.id ? 'Reopening…' : 'Reopen'}
                           </button>
                         )}
                       </div>

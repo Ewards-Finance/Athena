@@ -48,11 +48,45 @@ export function countWorkingDays(year: number, month: number, holidays: Date[]):
   return count;
 }
 
+// ─── TDS (Income Tax) — New Regime, FY 2025-26 ───────────────────────────────
+/**
+ * Calculate annual TDS under the new tax regime (FY 2025-26 / Budget 2025).
+ * - Standard deduction: ₹75,000
+ * - Section 87A rebate: full rebate if taxable income ≤ ₹12,00,000 (tax = 0)
+ * - Slabs: 0% up to ₹4L | 5% ₹4L-8L | 10% ₹8L-12L | 15% ₹12L-16L |
+ *          20% ₹16L-20L | 25% ₹20L-24L | 30% above ₹24L
+ * - Health & Education Cess: 4%
+ * Returns monthly TDS amount (annual tax / 12), rounded to nearest rupee.
+ */
+export function calculateTDS(annualCtc: number): number {
+  const STANDARD_DEDUCTION = 75_000;
+  const taxableIncome = Math.max(0, annualCtc - STANDARD_DEDUCTION);
+
+  // Slab computation
+  let tax = 0;
+  if      (taxableIncome <= 400_000)  tax = 0;
+  else if (taxableIncome <= 800_000)  tax = (taxableIncome - 400_000)   * 0.05;
+  else if (taxableIncome <= 1_200_000) tax = 20_000  + (taxableIncome - 800_000)   * 0.10;
+  else if (taxableIncome <= 1_600_000) tax = 60_000  + (taxableIncome - 1_200_000) * 0.15;
+  else if (taxableIncome <= 2_000_000) tax = 120_000 + (taxableIncome - 1_600_000) * 0.20;
+  else if (taxableIncome <= 2_400_000) tax = 200_000 + (taxableIncome - 2_000_000) * 0.25;
+  else                                 tax = 300_000 + (taxableIncome - 2_400_000) * 0.30;
+
+  // Section 87A: full rebate if taxable income ≤ ₹12,00,000
+  if (taxableIncome <= 1_200_000) return 0;
+
+  // Add 4% cess
+  const annualTax = Math.round(tax * 1.04);
+
+  // Monthly TDS
+  return Math.round(annualTax / 12);
+}
+
 // ─── Component shape (mirrors DB model) ──────────────────────────────────────
 export interface ComponentSnapshot {
   name:     string;
   type:     'EARNING' | 'DEDUCTION';
-  calcType: 'PERCENTAGE_OF_CTC' | 'FIXED' | 'MANUAL' | 'AUTO_PT';
+  calcType: 'PERCENTAGE_OF_CTC' | 'FIXED' | 'MANUAL' | 'AUTO_PT' | 'AUTO_TDS';
   value:    number;
   order:    number;
 }
@@ -81,8 +115,10 @@ export interface ComponentSnapshot {
  */
 export function computePayslipEntry(params: {
   monthlyCtc:     number;
+  annualCtc?:     number;  // Used for AUTO_TDS calculation; defaults to monthlyCtc * 12
   workingDays:    number;
   lwpDays:        number;
+  wfhDays?:       number;  // TEMPORARY_WFH approved days → 30% daily deduction
   components:     ComponentSnapshot[];
   reimbursements: number;
   // Optional: pass existing manual values to preserve them (used on recompute)
@@ -93,6 +129,8 @@ export function computePayslipEntry(params: {
     monthlyCtc, workingDays, lwpDays, components,
     reimbursements, existingEarnings = {}, existingDeductions = {},
   } = params;
+  const annualCtc = params.annualCtc ?? monthlyCtc * 12;
+  const wfhDays   = params.wfhDays ?? 0;
 
   const paidDays = Math.max(0, workingDays - lwpDays);
 
@@ -132,8 +170,18 @@ export function computePayslipEntry(params: {
     deductions['LWP Deduction'] = lwpDeduction;
   }
 
+  // WFH Deduction: 30% of daily gross for each approved TEMPORARY_WFH day
+  // Employee is present (LWP unaffected), but takes a 30% cut on those days.
+  const wfhDeduction =
+    workingDays > 0 && wfhDays > 0
+      ? round2(fullGross * (wfhDays / workingDays) * WFH_DEDUCTION_RATE)
+      : 0;
+  if (wfhDeduction > 0) {
+    deductions['WFH Deduction'] = wfhDeduction;
+  }
+
   // Prorated gross after LWP (used for PT slab lookup)
-  const proratedGross = round2(fullGross - lwpDeduction);
+  const proratedGross = round2(fullGross - lwpDeduction - wfhDeduction);
 
   const deductionComponents = [...components]
     .filter((c) => c.type === 'DEDUCTION')
@@ -143,6 +191,8 @@ export function computePayslipEntry(params: {
     let val = 0;
     if (comp.calcType === 'AUTO_PT') {
       val = calculatePT(proratedGross);
+    } else if (comp.calcType === 'AUTO_TDS') {
+      val = calculateTDS(annualCtc);
     } else if (comp.calcType === 'FIXED') {
       val = comp.value;
     } else if (comp.calcType === 'MANUAL') {
@@ -171,6 +221,60 @@ export function computePayslipEntry(params: {
     netPay,
   };
 }
+
+// ─── Saturday Policy (Ewards company policy) ─────────────────────────────────
+/**
+ * SATURDAY WORKING POLICY — read this before touching payroll Saturday logic.
+ *
+ * Each month has N Saturdays (typically 4, sometimes 5).
+ *
+ * OFF Saturdays (no work expected):
+ *   Full-timer : 2 Saturdays off
+ *   Intern     : 1 Saturday off
+ *
+ * OFFICE Saturday (1 per month, not fixed — any Saturday):
+ *   Employees physically go to office. Attendance tracked via fingerprint device.
+ *   NO worklog required for this Saturday.
+ *
+ * WFH Saturdays (remaining working Saturdays):
+ *   Full-timer : N - 3 Saturdays  (N total − 2 off − 1 office)
+ *   Intern     : N - 2 Saturdays  (N total − 1 off − 1 office)
+ *   An APPROVED worklog must be submitted for each WFH Saturday.
+ *
+ * WORKED Saturday = fingerprint attendance record EXISTS  OR  approved worklog submitted.
+ *   This means the office Saturday (fingerprint only) counts as a worked Saturday.
+ *
+ * PENALTY (applied as LWP deduction at payroll run time):
+ *   required_worked = N - 3  (full-timer)  |  N - 2  (intern)
+ *   penalty_days    = max(0, required_worked − actual_worked_saturdays)
+ *   Each missing Saturday = 1 full LWP day deducted.
+ *
+ * NOTE: Declared WFH days (company-wide) are handled separately — if an admin
+ * declares a specific date as WFH, all employees must submit a worklog regardless
+ * of whether it is a Saturday. That penalty is computed independently.
+ *
+ * NOTE: Absence auto-marking skips ALL Saturdays — Saturday compliance is
+ * handled entirely through this worklog/fingerprint check, not absence records.
+ */
+export const SATURDAY_FREE_OFF: Record<'FULL_TIME' | 'INTERN', number> = {
+  FULL_TIME: 3, // 2 off + 1 office = 3 non-worklog Saturdays
+  INTERN:    2, // 1 off + 1 office = 2 non-worklog Saturdays
+};
+
+// ─── Special Leave Types ───────────────────────────────────────────────────────
+/**
+ * UNLIMITED_LEAVE_TYPES: Leave types with no fixed balance.
+ *   TEMPORARY_WFH — employee works from home; 30% daily pay deduction applies.
+ *   TRAVELLING    — employee is on field travel; auto-treated as present, no LWP.
+ *
+ * Rules:
+ *   - No LeaveBalance row created or decremented for these types.
+ *   - TEMPORARY_WFH: deduction = (fullGross / workingDays) × wfhDays × WFH_DEDUCTION_RATE
+ *     Added to payslip deductions as "WFH Deduction". LWP days unaffected.
+ *   - TRAVELLING: approved travelling days are subtracted from computed LWP.
+ */
+export const UNLIMITED_LEAVE_TYPES = ['TEMPORARY_WFH', 'TRAVELLING'] as const;
+export const WFH_DEDUCTION_RATE    = 0.30;
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
 function round2(n: number): number {

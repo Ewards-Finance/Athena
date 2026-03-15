@@ -19,17 +19,19 @@ import { Label }   from '@/components/ui/label';
 import {
   Loader2, Users, Search, Settings2,
   ChevronDown, ChevronUp, Check,
-  UserPlus, UserX, Eye, EyeOff, Pencil,
+  UserPlus, UserX, Eye, EyeOff, Pencil, TrendingUp, Upload, Download,
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Employee {
-  id:    string;
-  email: string;
-  role:  string;
+  id:               string;
+  email:            string;
+  role:             string;
+  employmentStatus?: string;
   profile?: {
     firstName:       string;
+    middleName?:     string;
     lastName:        string;
     employeeId:      string;
     designation?:    string;
@@ -42,11 +44,29 @@ interface Employee {
   };
 }
 
+const EMPLOYMENT_STATUS_OPTIONS = [
+  { value: 'PENDING_JOIN',      label: 'Pending Join',    color: 'bg-yellow-100 text-yellow-700' },
+  { value: 'PROBATION',         label: 'Probation',       color: 'bg-orange-100 text-orange-700' },
+  { value: 'INTERNSHIP',        label: 'Internship',      color: 'bg-sky-100 text-sky-700' },
+  { value: 'REGULAR_FULL_TIME', label: 'Regular',         color: 'bg-green-100 text-green-700' },
+  { value: 'NOTICE_PERIOD',     label: 'Notice Period',   color: 'bg-red-100 text-red-700' },
+  { value: 'INACTIVE',          label: 'Inactive',        color: 'bg-gray-100 text-gray-500' },
+];
+
+function fullName(profile?: { firstName?: string; middleName?: string; lastName?: string } | null) {
+  return [profile?.firstName, profile?.middleName, profile?.lastName].filter(Boolean).join(' ');
+}
+
+function getStatusMeta(status?: string) {
+  return EMPLOYMENT_STATUS_OPTIONS.find((s) => s.value === status)
+    || { value: status || '', label: status || 'Unknown', color: 'bg-gray-100 text-gray-500' };
+}
+
 interface LeavePolicy { leaveType: string; label: string; }
 interface LeaveBalance { leaveType: string; total: number; used: number; }
 interface OverviewUser {
   id:            string;
-  profile?:      { firstName: string; lastName: string; employeeId: string };
+  profile?:      { firstName: string; middleName?: string; lastName: string; employeeId: string };
   leaveBalances: LeaveBalance[];
 }
 
@@ -81,6 +101,7 @@ const ifscRegex = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 const addEmployeeSchema = z.object({
   // Account
   firstName:         z.string().min(1, 'Required'),
+  middleName:        z.string().optional(),
   lastName:          z.string().min(1, 'Required'),
   email:             z.string().email('Invalid email'),
   password:          z.string().min(8, 'Minimum 8 characters'),
@@ -116,7 +137,7 @@ type AddEmployeeForm = z.infer<typeof addEmployeeSchema>;
 // ─── Leave Quota Row ──────────────────────────────────────────────────────────
 
 function QuotaRow({ user, year, policyTypes }: { user: OverviewUser; year: number; policyTypes: LeavePolicy[] }) {
-  const name = user.profile ? `${user.profile.firstName} ${user.profile.lastName}` : user.id;
+  const name = user.profile ? fullName(user.profile) : user.id;
 
   const [expanded, setExpanded] = useState(false);
   const [saving, setSaving]     = useState(false);
@@ -223,14 +244,16 @@ function QuotaRow({ user, year, policyTypes }: { user: OverviewUser; year: numbe
 
 export default function Organization() {
   const { user: currentUser }   = useAuth();
-  const [tab, setTab]           = useState<'directory' | 'quotas'>('directory');
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [overview, setOverview]   = useState<OverviewUser[]>([]);
   const [loading, setLoading]     = useState(true);
-  const [quotaLoading, setQuotaLoading] = useState(false);
   const [search, setSearch]       = useState('');
-  const [year, setYear]           = useState(new Date().getFullYear());
-  const [leaveTypes, setLeaveTypes] = useState<LeavePolicy[]>([]);
+
+  // Employment status change state
+  const [statusEmp,      setStatusEmp]      = useState<Employee | null>(null);
+  const [newStatus,      setNewStatus]      = useState('');
+  const [savingStatus,   setSavingStatus]   = useState(false);
+  const [statusError,    setStatusError]    = useState('');
+
 
   // Add employee state
   const [showAddForm, setShowAddForm]   = useState(false);
@@ -244,6 +267,17 @@ export default function Organization() {
   const [editDraft, setEditDraft]       = useState<Record<string, string>>({});
   const [savingEdit, setSavingEdit]     = useState(false);
   const [editError, setEditError]       = useState('');
+
+  // Salary revision history state
+  const [salRevEmp,      setSalRevEmp]      = useState<Employee | null>(null);
+  const [salRevisions,   setSalRevisions]   = useState<any[]>([]);
+  const [loadingSalRev,  setLoadingSalRev]  = useState(false);
+
+  // Bulk import state
+  const [showImport,    setShowImport]    = useState(false);
+  const [importFile,    setImportFile]    = useState<File | null>(null);
+  const [importing,     setImporting]     = useState(false);
+  const [importResults, setImportResults] = useState<any | null>(null);
 
   const {
     register, handleSubmit, reset,
@@ -262,17 +296,6 @@ export default function Organization() {
 
   useEffect(() => { fetchEmployees(); }, []);
 
-  useEffect(() => {
-    if (tab === 'quotas') {
-      setQuotaLoading(true);
-      api.get<OverviewUser[]>(`/leave-balance/overview?year=${year}`)
-        .then(({ data }) => setOverview(data))
-        .finally(() => setQuotaLoading(false));
-      api.get('/leave-policy').then(({ data }) =>
-        setLeaveTypes(data.map((p: any) => ({ leaveType: p.leaveType, label: p.label })))
-      );
-    }
-  }, [tab, year]);
 
   // ── Add Employee ──
   const onAddEmployee = async (data: AddEmployeeForm) => {
@@ -293,7 +316,7 @@ export default function Organization() {
   // ── Deactivate Employee ──
   const handleDeactivate = async (emp: Employee) => {
     const name = emp.profile
-      ? `${emp.profile.firstName} ${emp.profile.lastName}`
+      ? fullName(emp.profile)
       : emp.email;
 
     if (!confirm(`Deactivate ${name}?\n\nThis will disable their login and hide them from the directory. This cannot be undone from the UI.`)) return;
@@ -317,6 +340,7 @@ export default function Organization() {
     const p = emp.profile as any;
     setEditDraft({
       firstName:         p?.firstName      ?? '',
+      middleName:        p?.middleName     ?? '',
       lastName:          p?.lastName       ?? '',
       employeeId:        p?.employeeId     ?? '',
       email:             emp.email,
@@ -354,6 +378,7 @@ export default function Organization() {
     try {
       await api.put(`/employees/${editingEmp.id}`, {
         firstName:         editDraft.firstName         || undefined,
+        middleName:        editDraft.middleName        || undefined,
         lastName:          editDraft.lastName          || undefined,
         employeeId:        editDraft.employeeId        || undefined,
         email:             editDraft.email             || undefined,
@@ -387,10 +412,59 @@ export default function Organization() {
     }
   };
 
+  const handleStatusChange = async () => {
+    if (!statusEmp || !newStatus) return;
+    setSavingStatus(true);
+    setStatusError('');
+    try {
+      await api.patch(`/employees/${statusEmp.id}/status`, { employmentStatus: newStatus });
+      setEmployees((prev) =>
+        prev.map((e) => e.id === statusEmp.id ? { ...e, employmentStatus: newStatus } : e)
+      );
+      setStatusEmp(null);
+      setNewStatus('');
+    } catch (err: any) {
+      setStatusError(err?.response?.data?.error || 'Failed to update status');
+    } finally {
+      setSavingStatus(false);
+    }
+  };
+
+  // Open salary revision history for an employee
+  const openSalRev = async (emp: Employee) => {
+    setSalRevEmp(emp);
+    setSalRevisions([]);
+    setLoadingSalRev(true);
+    try {
+      const r = await api.get(`/salary-revisions/${emp.id}`);
+      setSalRevisions(r.data);
+    } catch { /* ignore */ }
+    finally { setLoadingSalRev(false); }
+  };
+
+  // Bulk import
+  const handleImport = async () => {
+    if (!importFile) return;
+    setImporting(true);
+    setImportResults(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', importFile);
+      const r = await api.post('/employees/import', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      setImportResults(r.data);
+      fetchEmployees();
+    } catch (err: any) {
+      setImportResults({ error: err?.response?.data?.error || 'Import failed' });
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const filtered = employees.filter((emp) => {
     const q = search.toLowerCase();
     return (
       emp.profile?.firstName?.toLowerCase().includes(q) ||
+      emp.profile?.middleName?.toLowerCase().includes(q) ||
       emp.profile?.lastName?.toLowerCase().includes(q) ||
       emp.profile?.employeeId?.toLowerCase().includes(q) ||
       emp.profile?.department?.toLowerCase().includes(q) ||
@@ -408,14 +482,21 @@ export default function Organization() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Organization</h1>
-          <p className="text-muted-foreground text-sm">Employee directory and leave quota management</p>
+          <p className="text-muted-foreground text-sm">Employee directory</p>
         </div>
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1.5 text-muted-foreground text-sm">
             <Users className="h-4 w-4" />
             {employees.length} active employees
           </span>
-          {tab === 'directory' && (
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => { setShowImport(true); setImportFile(null); setImportResults(null); }}
+            >
+              <Upload className="h-4 w-4 mr-2" />
+              Bulk Import
+            </Button>
             <Button
               onClick={() => { setShowAddForm((v) => !v); reset(); setShowPassword(false); }}
               style={{ backgroundColor: '#361963' }}
@@ -424,31 +505,10 @@ export default function Organization() {
               <UserPlus className="h-4 w-4 mr-2" />
               Add Employee
             </Button>
-          )}
+          </div>
         </div>
       </div>
 
-      {/* ── Tab switcher ── */}
-      <div className="flex gap-1 p-1 rounded-lg w-fit" style={{ backgroundColor: '#f3f0fa' }}>
-        {(['directory', 'quotas'] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className="px-4 py-1.5 rounded-md text-sm font-medium transition-all"
-            style={tab === t ? { backgroundColor: '#361963', color: '#fff' } : { color: '#361963' }}
-          >
-            {t === 'directory'
-              ? <span className="flex items-center gap-1.5"><Users className="h-3.5 w-3.5" />Directory</span>
-              : <span className="flex items-center gap-1.5"><Settings2 className="h-3.5 w-3.5" />Leave Quotas</span>}
-          </button>
-        ))}
-      </div>
-
-      {/* ══════════════════════════════════════════════════════════════════════
-          Tab: Directory
-      ══════════════════════════════════════════════════════════════════════ */}
-      {tab === 'directory' && (
-        <>
           {/* ── Add Employee Form ── */}
           {showAddForm && (
             <Card>
@@ -470,6 +530,10 @@ export default function Organization() {
                     {errors.firstName && <p className="text-xs text-destructive">{errors.firstName.message}</p>}
                   </div>
                   <div className="space-y-2">
+                    <Label htmlFor="middleName">Middle Name</Label>
+                    <Input id="middleName" placeholder="Kumar" {...register('middleName')} />
+                  </div>
+                  <div className="space-y-2">
                     <Label htmlFor="lastName">Last Name <span className="text-destructive">*</span></Label>
                     <Input id="lastName" placeholder="Verma" {...register('lastName')} />
                     {errors.lastName && <p className="text-xs text-destructive">{errors.lastName.message}</p>}
@@ -481,7 +545,7 @@ export default function Organization() {
                   </div>
 
                   {/* Row 2 — Email + Password + Role */}
-                  <div className="space-y-2">
+                  <div className="space-y-2 md:col-span-2">
                     <Label htmlFor="email">Work Email <span className="text-destructive">*</span></Label>
                     <Input id="email" type="email" placeholder="rahul@ewards.com" {...register('email')} />
                     {errors.email && <p className="text-xs text-destructive">{errors.email.message}</p>}
@@ -570,7 +634,7 @@ export default function Organization() {
                       <option value="">— Select manager —</option>
                       {managers.map((m) => (
                         <option key={m.id} value={m.id}>
-                          {m.profile?.firstName} {m.profile?.lastName}
+                          {fullName(m.profile)}
                           {m.profile?.employeeId ? ` (${m.profile.employeeId})` : ''} — {m.role}
                         </option>
                       ))}
@@ -691,7 +755,7 @@ export default function Organization() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">
-                  Edit — {editingEmp.profile?.firstName} {editingEmp.profile?.lastName}
+                  Edit — {fullName(editingEmp.profile)}
                   <span className="ml-2 text-sm font-normal text-muted-foreground font-mono">
                     {editingEmp.profile?.employeeId}
                   </span>
@@ -713,6 +777,13 @@ export default function Organization() {
                     <Input
                       value={editDraft.firstName}
                       onChange={(e) => setEditDraft((p) => ({ ...p, firstName: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Middle Name</Label>
+                    <Input
+                      value={editDraft.middleName}
+                      onChange={(e) => setEditDraft((p) => ({ ...p, middleName: e.target.value }))}
                     />
                   </div>
                   <div className="space-y-2">
@@ -850,7 +921,7 @@ export default function Organization() {
                         .filter((m) => m.id !== editingEmp.id)
                         .map((m) => (
                           <option key={m.id} value={m.id}>
-                            {m.profile?.firstName} {m.profile?.lastName}
+                            {fullName(m.profile)}
                             {m.profile?.employeeId ? ` (${m.profile.employeeId})` : ''} — {m.role}
                           </option>
                         ))}
@@ -1032,7 +1103,8 @@ export default function Organization() {
                         <th className="text-left pb-3 pr-4 font-medium">Joined</th>
                         <th className="text-left pb-3 pr-4 font-medium">Annual CTC</th>
                         <th className="text-left pb-3 pr-4 font-medium">Role</th>
-                        <th className="text-left pb-3 pr-4 font-medium">Status</th>
+                        <th className="text-left pb-3 pr-4 font-medium">Type</th>
+                        <th className="text-left pb-3 pr-4 font-medium">Lifecycle</th>
                         <th className="pb-3 font-medium w-10" />
                       </tr>
                     </thead>
@@ -1044,7 +1116,7 @@ export default function Organization() {
                           <tr key={emp.id} className="border-b last:border-0 hover:bg-muted/30 transition-colors">
                             <td className="py-3 pr-4">
                               <p className="font-medium">
-                                {emp.profile?.firstName} {emp.profile?.lastName}
+                                {fullName(emp.profile)}
                               </p>
                               <p className="text-xs text-muted-foreground">{emp.email}</p>
                             </td>
@@ -1077,8 +1149,31 @@ export default function Organization() {
                                 {emp.profile?.employmentType === 'INTERN' ? 'Intern' : 'Full Time'}
                               </span>
                             </td>
+                            <td className="py-3 pr-4">
+                              {(() => {
+                                const meta = getStatusMeta(emp.employmentStatus);
+                                return (
+                                  <button
+                                    onClick={() => { setStatusEmp(emp); setNewStatus(emp.employmentStatus || 'REGULAR_FULL_TIME'); setStatusError(''); }}
+                                    className={`text-xs font-medium px-2 py-0.5 rounded-full cursor-pointer hover:opacity-80 ${meta.color}`}
+                                    title="Click to change status"
+                                  >
+                                    {meta.label}
+                                  </button>
+                                );
+                              })()}
+                            </td>
                             <td className="py-3 text-right">
                               <div className="flex items-center justify-end gap-1">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 w-7 p-0 text-muted-foreground hover:text-[#361963]"
+                                  onClick={() => openSalRev(emp)}
+                                  title="Salary revision history"
+                                >
+                                  <TrendingUp className="h-3.5 w-3.5" />
+                                </Button>
                                 <Button
                                   size="sm"
                                   variant="ghost"
@@ -1113,45 +1208,187 @@ export default function Organization() {
               )}
             </CardContent>
           </Card>
-        </>
+
+      {/* Employment Status Change Modal */}
+      {statusEmp && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <Card className="w-full max-w-sm">
+            <CardHeader>
+              <CardTitle className="text-base">Change Employment Status</CardTitle>
+              <CardDescription>
+                {fullName(statusEmp.profile)} ({statusEmp.profile?.employeeId})
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-1.5">
+                <Label>New Status</Label>
+                <select
+                  value={newStatus}
+                  onChange={(e) => setNewStatus(e.target.value)}
+                  className="w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#361963]"
+                >
+                  {EMPLOYMENT_STATUS_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+              {statusError && <p className="text-xs text-red-600">{statusError}</p>}
+              <div className="flex gap-2 justify-end">
+                <Button variant="outline" size="sm" onClick={() => { setStatusEmp(null); setStatusError(''); }}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  disabled={savingStatus || newStatus === statusEmp.employmentStatus}
+                  onClick={handleStatusChange}
+                  style={{ backgroundColor: '#361963' }}
+                >
+                  {savingStatus ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
+                  Update Status
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       )}
 
-      {/* ══════════════════════════════════════════════════════════════════════
-          Tab: Leave Quotas
-      ══════════════════════════════════════════════════════════════════════ */}
-      {tab === 'quotas' && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div>
-                <CardTitle className="text-base">Leave Quota Management</CardTitle>
-                <CardDescription>Set annual leave totals per employee. Click a row to expand and edit.</CardDescription>
+
+      {/* ── Salary Revision History Modal ── */}
+      {salRevEmp && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <Card className="w-full max-w-lg max-h-[90vh] flex flex-col">
+            <CardHeader className="flex-shrink-0">
+              <div className="flex items-start justify-between">
+                <div>
+                  <CardTitle className="text-base">Salary Revision History</CardTitle>
+                  <CardDescription>
+                    {fullName(salRevEmp.profile)} ({salRevEmp.profile?.employeeId})
+                  </CardDescription>
+                </div>
+                <button
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={() => setSalRevEmp(null)}
+                >✕</button>
               </div>
+            </CardHeader>
+            <CardContent className="flex-1 overflow-y-auto">
+              {loadingSalRev ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                </div>
+              ) : salRevisions.length === 0 ? (
+                <p className="text-center text-muted-foreground py-8 text-sm">
+                  No salary revisions recorded yet. Changes to Annual CTC will be logged here automatically.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {salRevisions.map((rev: any, i: number) => (
+                    <div key={rev.id} className="border rounded-lg p-3 text-sm">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-medium">
+                          {new Date(rev.effectiveDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                        </span>
+                        {i === 0 && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Latest</span>}
+                      </div>
+                      <div className="flex items-center gap-3 text-muted-foreground">
+                        <span>₹{rev.oldCtc.toLocaleString('en-IN')}</span>
+                        <span className="text-xs">→</span>
+                        <span className="font-medium text-foreground">₹{rev.newCtc.toLocaleString('en-IN')}</span>
+                        <span className={`text-xs ml-auto ${rev.newCtc > rev.oldCtc ? 'text-green-600' : 'text-red-600'}`}>
+                          {rev.newCtc > rev.oldCtc ? '▲' : '▼'} ₹{Math.abs(rev.newCtc - rev.oldCtc).toLocaleString('en-IN')}
+                        </span>
+                      </div>
+                      {rev.reason && <p className="text-xs text-muted-foreground mt-1">{rev.reason}</p>}
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        By: {rev.revisor?.profile ? fullName(rev.revisor.profile) : 'Admin'}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ── Bulk Import Modal ── */}
+      {showImport && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <Card className="w-full max-w-lg">
+            <CardHeader>
+              <div className="flex items-start justify-between">
+                <div>
+                  <CardTitle className="text-base">Bulk Employee Import</CardTitle>
+                  <CardDescription>Upload an Excel file with employee data</CardDescription>
+                </div>
+                <button className="text-muted-foreground hover:text-foreground" onClick={() => setShowImport(false)}>✕</button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
               <div className="flex items-center gap-2">
-                <Label className="text-sm text-muted-foreground">Year</Label>
-                <Input
-                  type="number" min={2020} max={2100}
-                  value={year}
-                  onChange={(e) => setYear(Number(e.target.value))}
-                  className="w-24 h-9 text-sm"
+                <a
+                  href={`${(api.defaults as any).baseURL || '/api'}/employees/import-template`}
+                  className="inline-flex items-center gap-2 text-sm text-[#361963] hover:underline font-medium"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    // Use axios to trigger auth-protected download
+                    api.get('/employees/import-template', { responseType: 'blob' }).then((r) => {
+                      const url = URL.createObjectURL(new Blob([r.data]));
+                      const a   = document.createElement('a');
+                      a.href    = url;
+                      a.download = 'athena_employee_import_template.xlsx';
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }).catch(() => {});
+                  }}
+                >
+                  <Download className="h-4 w-4" />
+                  Download Sample Template
+                </a>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1">Upload Filled Template (.xlsx)</label>
+                <input
+                  type="file"
+                  accept=".xlsx"
+                  className="w-full text-sm"
+                  onChange={(e) => { setImportFile(e.target.files?.[0] ?? null); setImportResults(null); }}
                 />
               </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {quotaLoading ? (
-              <div className="flex justify-center py-8">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+
+              {importResults && (
+                <div className={`text-sm rounded-md p-3 ${importResults.error ? 'bg-red-50 text-red-700 border border-red-200' : 'bg-green-50 text-green-800 border border-green-200'}`}>
+                  {importResults.error ? (
+                    <p>{importResults.error}</p>
+                  ) : (
+                    <>
+                      <p className="font-medium">{importResults.message}</p>
+                      {importResults.results?.filter((r: any) => r.status === 'skipped').map((r: any) => (
+                        <p key={r.row} className="text-xs text-amber-700 mt-0.5">
+                          Row {r.row} ({r.employeeId || 'unknown'}): {r.reason}
+                        </p>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+
+              <div className="flex gap-2 justify-end">
+                <Button variant="outline" onClick={() => setShowImport(false)}>Close</Button>
+                <Button
+                  disabled={!importFile || importing}
+                  onClick={handleImport}
+                  style={{ backgroundColor: '#361963' }}
+                  className="text-white"
+                >
+                  {importing ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Upload className="h-4 w-4 mr-2" />}
+                  {importing ? 'Importing...' : 'Import'}
+                </Button>
               </div>
-            ) : overview.length === 0 ? (
-              <p className="text-center text-muted-foreground py-8">No employees found.</p>
-            ) : (
-              <div className="space-y-2">
-                {overview.map((u) => <QuotaRow key={u.id} user={u} year={year} policyTypes={leaveTypes} />)}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </div>
       )}
     </div>
   );
