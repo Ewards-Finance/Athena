@@ -81,6 +81,7 @@ export default function PayrollRunDetail() {
   const [finalizing, setFinalizing]   = useState(false);
   const [finalizeError, setFinalizeError] = useState('');
   const [downloading, setDownloading] = useState(false);
+  const [reopening, setReopening]     = useState(false);
 
   // ── Fetch run ─────────────────────────────────────────────────────────────
   const fetchRun = useCallback(async () => {
@@ -170,6 +171,21 @@ export default function PayrollRunDetail() {
     }
   };
 
+  // ── Reopen ────────────────────────────────────────────────────────────────
+  const handleReopen = async () => {
+    if (!run) return;
+    if (!confirm(`Reopen ${MONTHS[run.month]} ${run.year} payroll run? It will go back to DRAFT and employees will no longer see it as finalized until you re-finalize.`)) return;
+    setReopening(true);
+    try {
+      await api.post(`/payroll/runs/${id}/reopen`);
+      fetchRun();
+    } catch (err: any) {
+      alert(err?.response?.data?.error ?? 'Failed to reopen run.');
+    } finally {
+      setReopening(false);
+    }
+  };
+
   // ── Download .xlsx ────────────────────────────────────────────────────────
   const handleDownload = async () => {
     if (!run) return;
@@ -254,6 +270,16 @@ export default function PayrollRunDetail() {
               className="text-white"
             >
               {finalizing ? 'Finalizing…' : 'Finalize Run'}
+            </Button>
+          )}
+          {!isDraft && (
+            <Button
+              onClick={handleReopen}
+              disabled={reopening}
+              variant="outline"
+              className="border-amber-400 text-amber-600 hover:bg-amber-50"
+            >
+              {reopening ? 'Reopening…' : 'Reopen Run'}
             </Button>
           )}
           <Button

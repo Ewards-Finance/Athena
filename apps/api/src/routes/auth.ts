@@ -113,4 +113,75 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /api/auth/reset-password/:userId - admin resets any employee's password to a temp value
+router.post('/reset-password/:userId', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    if (req.user!.role !== 'ADMIN') {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+
+    const target = await prisma.user.findUnique({ where: { id: req.params.userId } });
+    if (!target) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    // Generate a temp password that satisfies strength requirements
+    const digits = Math.floor(1000 + Math.random() * 9000);
+    const tempPassword = `Temp@${digits}`;
+
+    const hashed = await bcrypt.hash(tempPassword, 12);
+    await prisma.user.update({ where: { id: target.id }, data: { password: hashed } });
+
+    res.json({ tempPassword });
+  } catch (err) {
+    console.error('Reset password error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/auth/change-password - any logged-in user can change their own password
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Current password is required'),
+  newPassword: z.string()
+    .min(8, 'Password must be at least 8 characters')
+    .regex(/[A-Z]/, 'Must contain an uppercase letter')
+    .regex(/[a-z]/, 'Must contain a lowercase letter')
+    .regex(/[0-9]/, 'Must contain a number')
+    .regex(/[^A-Za-z0-9]/, 'Must contain a special character'),
+});
+
+router.post('/change-password', authenticate, async (req: AuthRequest, res: Response) => {
+  try {
+    const parsed = changePasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.errors[0].message });
+      return;
+    }
+
+    const { currentPassword, newPassword } = parsed.data;
+
+    const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+
+    const match = await bcrypt.compare(currentPassword, user.password);
+    if (!match) {
+      res.status(400).json({ error: 'Current password is incorrect' });
+      return;
+    }
+
+    const hashed = await bcrypt.hash(newPassword, 12);
+    await prisma.user.update({ where: { id: user.id }, data: { password: hashed } });
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (err) {
+    console.error('Change password error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 export default router;

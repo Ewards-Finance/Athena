@@ -12,7 +12,8 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
-import { prisma } from '../index';
+import { PrismaClient } from '@prisma/client';
+const prisma = new PrismaClient();
 
 const router = Router();
 

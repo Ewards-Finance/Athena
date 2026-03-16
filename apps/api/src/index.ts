@@ -42,16 +42,27 @@ import { runBackup, isBackupConfigured } from './lib/backup';
 const app  = express();
 const PORT = process.env.PORT || 3001;
 
-// --- Middleware ---
-// Allowed origins: comma-separated list via CORS_ORIGINS env var.
-// Falls back to localhost:5173 for local development.
-const allowedOrigins = (process.env.CORS_ORIGINS ?? 'http://localhost:5173')
-  .split(',').map(s => s.trim());
+function getAllowedOrigins() {
+  const configuredOrigins = (process.env.CORS_ORIGIN ?? process.env.CORS_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 
+  return configuredOrigins;
+}
+
+// --- Middleware ---
+// Allow localhost/LAN during development, plus any explicit origins configured
+// via CORS_ORIGIN for hosted environments such as Vercel.
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true); // curl/Postman
-    callback(null, allowedOrigins.includes(origin));
+    // Allow requests with no origin (curl, Postman) and any local network origin
+    if (!origin) return callback(null, true);
+    const allowedOrigins = getAllowedOrigins();
+    const isLocalhost = origin.includes('localhost') || origin.includes('127.0.0.1');
+    const isLAN       = /^https?:\/\/192\.168\.\d+\.\d+/.test(origin);
+    const isConfigured = allowedOrigins.includes(origin);
+    callback(null, isLocalhost || isLAN || isConfigured);
   },
   credentials: true,
 }));

@@ -1,0 +1,260 @@
+================================================================================
+  ATHENA HRMS - ARCHITECTURE REPORT
+  Generated: 2026-03-16
+================================================================================
+
+PURPOSE
+This file replaces the old build-centric summary in BUILD_REPORT.txt.
+BUILD_REPORT.txt reflects the prototype state from 2026-03-09 and is now
+outdated relative to the live codebase.
+
+This document summarizes:
+- the current Athena application architecture
+- the current module coverage
+- the intended deployment architecture
+- the mobile distribution direction
+
+--------------------------------------------------------------------------------
+1. CURRENT CODEBASE ARCHITECTURE
+--------------------------------------------------------------------------------
+
+Repository structure:
+
+  Athena2.0/
+  |-- package.json                  -> root workspace scripts
+  |-- apps/
+  |   |-- api/                      -> Express + TypeScript backend
+  |   |   |-- prisma/
+  |   |   |   |-- schema.prisma     -> database schema
+  |   |   |   |-- seed.ts           -> demo data seed
+  |   |   |-- src/
+  |   |       |-- index.ts          -> API entrypoint
+  |   |       |-- middleware/       -> auth and upload middleware
+  |   |       |-- routes/           -> feature route modules
+  |   |       |-- lib/              -> payroll, audit, backup, email helpers
+  |   |
+  |   |-- web/                      -> React + Vite frontend
+  |       |-- src/
+  |       |   |-- App.tsx           -> route tree
+  |       |   |-- components/       -> layout + UI primitives
+  |       |   |-- hooks/            -> auth store
+  |       |   |-- lib/              -> API client and utilities
+  |       |   |-- pages/            -> feature screens
+  |       |-- vite.config.ts        -> Vite + PWA config
+
+Monorepo model:
+- npm workspaces at root
+- `apps/api` and `apps/web` are independently deployable
+
+--------------------------------------------------------------------------------
+2. TECHNOLOGY STACK
+--------------------------------------------------------------------------------
+
+Frontend:
+- React 18
+- Vite
+- TypeScript
+- Tailwind CSS
+- shadcn/Radix-based UI components
+- Zustand for auth state
+- Axios for API communication
+- vite-plugin-pwa already configured
+
+Backend:
+- Node.js
+- Express
+- TypeScript
+- Prisma ORM
+- JWT authentication
+- bcrypt password hashing
+- Zod validation
+
+Database:
+- PostgreSQL
+- Prisma migrations
+
+--------------------------------------------------------------------------------
+3. CURRENT FUNCTIONAL MODULES
+--------------------------------------------------------------------------------
+
+Auth and access control:
+- JWT login
+- role-based access: ADMIN, MANAGER, EMPLOYEE
+
+Employee management:
+- employee directory
+- profile/statutory/bank information
+- employment status lifecycle
+- salary revisions
+- bulk employee import
+
+Leave management:
+- leave policies
+- leave balances
+- FY-based leave tracking
+- overlap warning
+- approvals/rejections
+- type override
+- annual reset with carry-forward
+
+Attendance:
+- punch file import
+- EnNo mapping
+- import history
+- extension dates
+- late policy
+- manual corrections
+- absence marking
+- attendance adjustments
+- daily attendance reporting
+
+Payroll:
+- payroll components
+- employee CTC setup
+- payroll runs
+- draft/finalized/reopen workflow
+- payslip entries
+- PT and TDS support
+- export
+- employee payslip viewing
+
+Claims and reimbursements:
+- claim submission
+- receipt upload
+- approve/reject/pay workflow
+
+Worklogs:
+- self/team/all worklog views
+- declared WFH dates
+- reject/restore flow
+
+Admin and governance:
+- audit logs
+- settings panel
+- reports
+- search
+- notifications
+- document vault
+- API keys
+- backups
+- integration APIs
+
+--------------------------------------------------------------------------------
+4. SOURCE OF TRUTH
+--------------------------------------------------------------------------------
+
+The current source of truth is:
+- `apps/api/prisma/schema.prisma`
+- `apps/api/src/index.ts`
+- `apps/api/src/routes/*`
+- `apps/web/src/App.tsx`
+- `apps/web/src/pages/*`
+
+BUILD_REPORT.txt should be treated as historical project documentation, not as
+an accurate representation of the current Athena system.
+
+--------------------------------------------------------------------------------
+5. TARGET DEPLOYMENT ARCHITECTURE
+--------------------------------------------------------------------------------
+
+Planned production hosting:
+
+- Frontend: Vercel
+- Backend API: Render
+- Database: Neon PostgreSQL
+
+Request flow:
+
+  User Browser / Mobile
+           |
+           v
+      Vercel Frontend
+           |
+           v
+      Render API
+           |
+           v
+      Neon Postgres
+
+Recommended environment layout:
+
+Frontend (Vercel):
+- `VITE_API_BASE_URL` -> Render backend base URL
+
+Backend (Render):
+- `DATABASE_URL` -> Neon connection string
+- `JWT_SECRET`
+- any backup-related env vars
+- any email/integration env vars
+
+Notes:
+- Local Vite proxy (`/api -> localhost:3001`) is only for development.
+- Production frontend should call the hosted backend URL, not localhost.
+- Render backend must allow CORS for the deployed Vercel frontend domain.
+- Prisma migrations should run against Neon before or during deployment.
+
+--------------------------------------------------------------------------------
+6. MOBILE / APK DIRECTION
+--------------------------------------------------------------------------------
+
+Athena is currently a web app with PWA support already configured in
+`apps/web/vite.config.ts`.
+
+Practical mobile options:
+
+Option A: PWA install
+- fastest path
+- users open the hosted site and "Add to Home Screen"
+- no Play Store APK required
+
+Option B: APK wrapper
+- wrap the deployed web app using Capacitor or a Trusted Web Activity approach
+- useful if you need an installable Android APK
+
+Current recommendation:
+- first deploy web production
+- validate mobile responsiveness and PWA behavior
+- then generate APK from the hosted app if still needed
+
+--------------------------------------------------------------------------------
+7. DEPLOYMENT RISKS / TODOs BEFORE GO-LIVE
+--------------------------------------------------------------------------------
+
+- move all secrets out of local `.env` into Vercel/Render env settings
+- verify CORS for Vercel <-> Render
+- point frontend API base URL to production backend
+- migrate database to Neon
+- verify file upload persistence strategy on Render
+- verify backup strategy for hosted production
+- review document/privacy exposure before real employee data import
+- test payroll, attendance import, and uploads on hosted infra
+
+Important file-storage note:
+- local disk uploads are acceptable for prototype development
+- for real production, uploaded documents/receipts should move to object storage
+  such as S3-compatible storage or Cloudinary/R2, because container filesystems
+  on hosted platforms are not a durable long-term source of truth
+
+--------------------------------------------------------------------------------
+8. STATUS SUMMARY
+--------------------------------------------------------------------------------
+
+Athena is no longer just a basic HRMS prototype from the initial build report.
+It is now a broader modular HRMS with:
+- employee master
+- leave and attendance operations
+- payroll processing
+- document handling
+- audit and admin tooling
+- reporting
+- integration and backup foundations
+
+Target production architecture:
+- Vercel for frontend
+- Render for backend
+- Neon PostgreSQL for database
+- optional APK path after web deployment stabilizes
+
+================================================================================
+END OF ARCHITECTURE REPORT
+================================================================================

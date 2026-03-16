@@ -13,7 +13,7 @@ import { Button }        from '@/components/ui/button';
 import { Input }         from '@/components/ui/input';
 import { Label }         from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Eye, EyeOff, Loader2 } from 'lucide-react';
+import { Eye, EyeOff, Loader2, HelpCircle, X } from 'lucide-react';
 
 // Zod schema: enforces valid email and minimum password length
 const loginSchema = z.object({
@@ -26,8 +26,9 @@ type LoginFormData = z.infer<typeof loginSchema>;
 export default function Login() {
   const navigate         = useNavigate();
   const { login }        = useAuth();
-  const [apiError, setApiError] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
+  const [apiError, setApiError]           = useState('');
+  const [showPassword, setShowPassword]   = useState(false);
+  const [showForgot, setShowForgot]       = useState(false);
 
   const {
     register,
@@ -157,15 +158,42 @@ export default function Login() {
                   {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   {isSubmitting ? 'Signing in...' : 'Sign In'}
                 </Button>
+
+                <div className="text-center">
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground hover:underline"
+                    onClick={() => setShowForgot((v) => !v)}
+                  >
+                    Forgot your password?
+                  </button>
+                </div>
+
+                {showForgot && (
+                  <div className="relative rounded-lg px-4 py-3 text-sm"
+                       style={{ backgroundColor: '#f5f4f9', border: '1px solid #e8e5f0' }}>
+                    <button
+                      type="button"
+                      className="absolute top-2 right-2 text-muted-foreground hover:text-foreground"
+                      onClick={() => setShowForgot(false)}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                    <div className="flex gap-2">
+                      <HelpCircle className="h-4 w-4 mt-0.5 flex-shrink-0" style={{ color: '#361963' }} />
+                      <div>
+                        <p className="font-semibold mb-0.5" style={{ color: '#361963' }}>Password Reset</p>
+                        <p className="text-muted-foreground leading-relaxed">
+                          Please contact your <strong>HR Administrator</strong> to reset your password.
+                          They will generate a temporary password for you, which you can change after logging in
+                          from <strong>My Profile → Change Password</strong>.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </form>
 
-              {/* Demo credentials */}
-              <div className="mt-5 p-3 rounded-lg text-xs text-muted-foreground"
-                   style={{ backgroundColor: '#f5f4f9', border: '1px solid #e8e5f0' }}>
-                <p className="font-semibold mb-1.5" style={{ color: '#361963' }}>Demo credentials</p>
-                <p>Admin: <span className="font-mono">admin@ewards.com</span> / <span className="font-mono">Admin@123</span></p>
-                <p>Employee: <span className="font-mono">rahul.verma@ewards.com</span> / <span className="font-mono">Employee@123</span></p>
-              </div>
             </CardContent>
           </Card>
         </div>

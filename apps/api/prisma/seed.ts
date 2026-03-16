@@ -1,261 +1,389 @@
 /**
- * Athena V2 - Database Seed Script
- * Populates the DB with 1 Admin and 2 Employees so the app isn't empty on first run.
+ * Athena HRMS - Database Seed Script
+ *
+ * Seeds the database from the root-level employee_import_template.xlsx file.
+ * This replaces the earlier hardcoded demo users with the current company roster.
+ *
+ * Behavior:
+ * - clears existing app data in a fresh bootstrap-friendly way
+ * - creates users/profiles from the Excel sheet
+ * - resolves reporting managers by Employee ID
+ * - seeds leave policies, leave balances, payroll components, holidays, announcement
+ *
  * Run with: npm run seed (inside apps/api)
  */
 
-import { PrismaClient, Role } from '@prisma/client';
+import path from 'path';
+import ExcelJS from 'exceljs';
 import bcrypt from 'bcryptjs';
+import { PrismaClient, Role } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-async function main() {
-  console.log('🌱 Starting seed...');
+const EMPLOYEE_FILE = path.resolve(__dirname, '../../../employee_import_template.xlsx');
 
-  // Hash passwords with bcrypt (cost factor 10 is a good balance of security/speed)
-  const adminPassword = await bcrypt.hash('Admin@123', 10);
-  const empPassword   = await bcrypt.hash('Employee@123', 10);
+type RawEmployee = {
+  firstName: string;
+  middleName?: string;
+  lastName: string;
+  employeeId: string;
+  email: string;
+  password: string;
+  role: 'ADMIN' | 'MANAGER' | 'EMPLOYEE';
+  designation: string;
+  department: string;
+  officeLocation: string;
+  dateOfJoining?: Date;
+  dateOfBirth?: Date;
+  gender?: string;
+  phone?: string;
+  personalEmail?: string;
+  emergencyContact?: string;
+  bloodGroup?: string;
+  managerEmployeeId?: string;
+  annualCtc: number;
+  bankAccountNumber: string;
+  ifscCode: string;
+  bankName: string;
+  employmentType: 'FULL_TIME' | 'INTERN';
+  pan?: string;
+  aadharNumber?: string;
+  uan?: string;
+};
 
-  // --- 1. Create Admin User ---
-  const admin = await prisma.user.upsert({
-    where: { email: 'admin@ewards.com' },
-    update: {},
-    create: {
-      email:    'admin@ewards.com',
-      password: adminPassword,
-      role:     Role.ADMIN,
-      profile: {
-        create: {
-          firstName:     'Arjun',
-          lastName:      'Sharma',
-          employeeId:    'EWD-001',
-          designation:   'HR Administrator',
-          department:    'HR',
-          dateOfJoining: new Date('2020-01-15'),
-          officeLocation: 'Kolkata',
-          phone:         '+91-9876543210',
-          pan:           'ABRPS1234A',
-          aadharNumber:  '123456789012',
-          uan:           '100123456789',
-          bankAccountNumber: '001234567890',
-          ifscCode:      'HDFC0001234',
-          bankName:      'HDFC Bank',
-        },
-      },
-    },
-  });
+const LEAVE_POLICIES = [
+  { leaveType: 'SL',            label: 'Sick Leave',       defaultTotal: 12,  isActive: true, isUnlimited: false },
+  { leaveType: 'CL',            label: 'Casual Leave',     defaultTotal: 12,  isActive: true, isUnlimited: false },
+  { leaveType: 'EL',            label: 'Earned Leave',     defaultTotal: 15,  isActive: true, isUnlimited: false },
+  { leaveType: 'MATERNITY',     label: 'Maternity Leave',  defaultTotal: 180, isActive: true, isUnlimited: false },
+  { leaveType: 'PATERNITY',     label: 'Paternity Leave',  defaultTotal: 5,   isActive: true, isUnlimited: false },
+  { leaveType: 'TEMPORARY_WFH', label: 'Temporary WFH',    defaultTotal: 0,   isActive: true, isUnlimited: true  },
+  { leaveType: 'TRAVELLING',    label: 'Travelling',       defaultTotal: 0,   isActive: true, isUnlimited: true  },
+] as const;
 
-  // --- 2. Create Manager User (also acts as reporting manager for employees) ---
-  const manager = await prisma.user.upsert({
-    where: { email: 'manager@ewards.com' },
-    update: {},
-    create: {
-      email:    'manager@ewards.com',
-      password: empPassword,
-      role:     Role.MANAGER,
-      profile: {
-        create: {
-          firstName:     'Priya',
-          lastName:      'Das',
-          employeeId:    'EWD-002',
-          designation:   'Engineering Manager',
-          department:    'Tech',
-          dateOfJoining: new Date('2021-03-01'),
-          officeLocation: 'Kolkata',
-          phone:         '+91-9876543211',
-          pan:           'BCDPD5678B',
-          aadharNumber:  '234567890123',
-          uan:           '100234567890',
-          bankAccountNumber: '002345678901',
-          ifscCode:      'SBIN0001234',
-          bankName:      'State Bank of India',
-        },
-      },
-    },
-  });
+const PAYROLL_COMPONENTS = [
+  { name: 'Basic Salary',     type: 'EARNING'   as const, calcType: 'PERCENTAGE_OF_CTC' as const, value: 60, order: 1 },
+  { name: 'HRA',              type: 'EARNING'   as const, calcType: 'PERCENTAGE_OF_CTC' as const, value: 25, order: 2 },
+  { name: 'LTA',              type: 'EARNING'   as const, calcType: 'PERCENTAGE_OF_CTC' as const, value: 15, order: 3 },
+  { name: 'Professional Tax', type: 'DEDUCTION' as const, calcType: 'AUTO_PT'            as const, value: 0,  order: 4 },
+  { name: 'TDS',              type: 'DEDUCTION' as const, calcType: 'AUTO_TDS'           as const, value: 0,  order: 5 },
+] as const;
 
-  // --- 3. Create Employee 1 ---
-  const emp1 = await prisma.user.upsert({
-    where: { email: 'rahul.verma@ewards.com' },
-    update: {},
-    create: {
-      email:    'rahul.verma@ewards.com',
-      password: empPassword,
-      role:     Role.EMPLOYEE,
-      profile: {
-        create: {
-          firstName:     'Rahul',
-          lastName:      'Verma',
-          employeeId:    'EWD-003',
-          designation:   'Software Engineer',
-          department:    'Tech',
-          dateOfJoining: new Date('2022-07-15'),
-          officeLocation: 'Kolkata',
-          managerId:     manager.id,
-          phone:         '+91-9876543212',
-          pan:           'CEFPV9012C',
-          aadharNumber:  '345678901234',
-          uan:           '100345678901',
-          bankAccountNumber: '003456789012',
-          ifscCode:      'ICIC0001234',
-          bankName:      'ICICI Bank',
-          bloodGroup:    'B+',
-          emergencyContact: '+91-9998887776',
-        },
-      },
-    },
-  });
+const HOLIDAYS_2026 = [
+  { name: 'Holi',             date: new Date('2026-03-13'), type: 'National' },
+  { name: 'Good Friday',      date: new Date('2026-04-03'), type: 'National' },
+  { name: 'Eid-ul-Fitr',      date: new Date('2026-03-31'), type: 'National' },
+  { name: 'Independence Day', date: new Date('2026-08-15'), type: 'National' },
+  { name: 'Durga Puja',       date: new Date('2026-10-14'), type: 'Regional' },
+  { name: 'Diwali',           date: new Date('2026-11-07'), type: 'National' },
+  { name: 'Christmas',        date: new Date('2026-12-25'), type: 'National' },
+] as const;
 
-  // --- 4. Create Employee 2 ---
-  const emp2 = await prisma.user.upsert({
-    where: { email: 'sneha.roy@ewards.com' },
-    update: {},
-    create: {
-      email:    'sneha.roy@ewards.com',
-      password: empPassword,
-      role:     Role.EMPLOYEE,
-      profile: {
-        create: {
-          firstName:     'Sneha',
-          lastName:      'Roy',
-          employeeId:    'EWD-004',
-          designation:   'UI/UX Designer',
-          department:    'Tech',
-          dateOfJoining: new Date('2023-01-10'),
-          officeLocation: 'Kolkata',
-          managerId:     manager.id,
-          phone:         '+91-9876543213',
-          pan:           'DFGPR3456D',
-          aadharNumber:  '456789012345',
-          uan:           '100456789012',
-          bankAccountNumber: '004567890123',
-          ifscCode:      'AXIS0001234',
-          bankName:      'Axis Bank',
-          bloodGroup:    'O+',
-          emergencyContact: '+91-9997776665',
-        },
-      },
-    },
-  });
+function currentFYYear(date = new Date()) {
+  return date.getMonth() + 1 >= 4 ? date.getFullYear() : date.getFullYear() - 1;
+}
 
-  // --- 5. Seed Leave Balances for all users (2026) ---
-  // Only Paid Leave needs a balance row. Unlimited types (LWP, WFH, Travelling) have no balance.
-  const YEAR = 2026;
-  for (const u of [admin, manager, emp1, emp2]) {
-    await prisma.leaveBalance.upsert({
-      where:  { userId_year_leaveType: { userId: u.id, year: YEAR, leaveType: 'PL' } },
-      update: {},
-      create: { userId: u.id, year: YEAR, leaveType: 'PL', total: 18, used: 0 },
-    });
-  }
+function extractCellPrimitive(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
 
-  // --- 6. Seed Leave Policies (org-wide defaults) ---
-  const leavePolicies = [
-    { leaveType: 'PL',            label: 'Paid Leave',      defaultTotal: 18, isActive: true, isUnlimited: false },
-    { leaveType: 'LWP',           label: 'Unpaid Leave',    defaultTotal: 0,  isActive: true, isUnlimited: true  },
-    { leaveType: 'TEMPORARY_WFH', label: 'Temporary WFH',   defaultTotal: 0,  isActive: true, isUnlimited: true  },
-    { leaveType: 'TRAVELLING',    label: 'Travelling',      defaultTotal: 0,  isActive: true, isUnlimited: true  },
-  ];
-  for (const p of leavePolicies) {
-    await prisma.leavePolicy.upsert({
-      where:  { leaveType: p.leaveType },
-      update: {},
-      create: p,
-    });
-  }
+  if (typeof value !== 'object') return value;
 
-  // --- 8. Seed leave requests for demo data ---
-  await prisma.leaveRequest.createMany({
-    skipDuplicates: true,
-    data: [
-      {
-        employeeId: emp1.id,
-        managerId:  manager.id,
-        leaveType:  'PL',
-        startDate:  new Date('2026-03-10'),
-        endDate:    new Date('2026-03-11'),
-        totalDays:  2,
-        reason:     'Personal work',
-        status:     'PENDING',
-      },
-      {
-        employeeId: emp2.id,
-        managerId:  manager.id,
-        leaveType:  'PL',
-        startDate:  new Date('2026-03-05'),
-        endDate:    new Date('2026-03-05'),
-        totalDays:  1,
-        reason:     'Personal day',
-        status:     'APPROVED',
-        managerComment: 'Approved',
-        approvedAt: new Date('2026-03-04'),
-      },
-    ],
-  });
-
-  // --- 9. Seed Holidays ---
-  await prisma.holiday.createMany({
-    skipDuplicates: true,
-    data: [
-      { name: 'Holi',         date: new Date('2026-03-13'), type: 'National' },
-      { name: 'Good Friday',  date: new Date('2026-04-03'), type: 'National' },
-      { name: 'Eid-ul-Fitr',  date: new Date('2026-03-31'), type: 'National' },
-      { name: 'Independence Day', date: new Date('2026-08-15'), type: 'National' },
-      { name: 'Durga Puja',   date: new Date('2026-10-14'), type: 'Regional' },
-      { name: 'Diwali',       date: new Date('2026-11-07'), type: 'National' },
-      { name: 'Christmas',    date: new Date('2026-12-25'), type: 'National' },
-    ],
-  });
-
-  // --- 10. Seed a Welcome Announcement ---
-  await prisma.announcement.create({
-    data: {
-      title:     'Welcome to Athena V2!',
-      body:      'Our new HR Management System is live. Please complete your profile and verify your statutory details. Contact HR for any issues.',
-      createdBy: admin.id,
-      isActive:  true,
-    },
-  });
-
-  // --- 11. Seed default Payroll Components ---
-  const payrollComponents = [
-    { name: 'Basic Salary',          type: 'EARNING'   as const, calcType: 'PERCENTAGE_OF_CTC' as const, value: 60, order: 1 },
-    { name: 'HRA',                   type: 'EARNING'   as const, calcType: 'PERCENTAGE_OF_CTC' as const, value: 25, order: 2 },
-    { name: 'LTA',                   type: 'EARNING'   as const, calcType: 'PERCENTAGE_OF_CTC' as const, value: 15, order: 3 },
-    { name: 'Professional Tax',      type: 'DEDUCTION' as const, calcType: 'AUTO_PT'           as const, value: 0,  order: 4 },
-  ];
-  for (const comp of payrollComponents) {
-    await prisma.payrollComponent.upsert({
-      where:  { name: comp.name },
-      update: {},
-      create: comp,
-    });
-  }
-
-  // --- 12. Seed sample Annual CTC for all employees ---
-  const ctcMap: Record<string, number> = {
-    [admin.id]:   800000,   // ₹8,00,000 / year
-    [manager.id]: 1200000,  // ₹12,00,000 / year
-    [emp1.id]:    720000,   // ₹7,20,000 / year
-    [emp2.id]:    600000,   // ₹6,00,000 / year
+  const maybeText = value as {
+    text?: unknown;
+    hyperlink?: unknown;
+    result?: unknown;
+    richText?: Array<{ text?: unknown }>;
   };
-  for (const [userId, ctc] of Object.entries(ctcMap)) {
+
+  if (typeof maybeText.text === 'string') return maybeText.text;
+  if (typeof maybeText.result === 'string' || typeof maybeText.result === 'number') return maybeText.result;
+  if (Array.isArray(maybeText.richText)) {
+    return maybeText.richText.map((part) => String(part.text ?? '')).join('');
+  }
+
+  return value;
+}
+
+function normalizeText(value: unknown): string {
+  const primitive = extractCellPrimitive(value);
+  if (primitive === null || primitive === undefined) return '';
+  return String(primitive).trim();
+}
+
+function normalizeOptional(value: unknown): string | undefined {
+  const text = normalizeText(value);
+  return text || undefined;
+}
+
+function parseDateValue(value: ExcelJS.CellValue | undefined): Date | undefined {
+  if (!value) return undefined;
+  if (value instanceof Date) return value;
+  if (typeof value === 'number') return new Date(value);
+  const text = normalizeText(value);
+  if (!text) return undefined;
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function normalizeRole(value: unknown): RawEmployee['role'] {
+  const text = normalizeText(value).toUpperCase();
+  if (text === 'ADMIN' || text === 'MANAGER') return text;
+  return 'EMPLOYEE';
+}
+
+function normalizeEmploymentType(value: unknown): RawEmployee['employmentType'] {
+  const text = normalizeText(value).toUpperCase().replace(/\s+/g, '_');
+  return text === 'INTERNSHIP' || text === 'INTERN' ? 'INTERN' : 'FULL_TIME';
+}
+
+function deriveEmploymentStatus(employee: RawEmployee) {
+  if (employee.dateOfJoining && employee.dateOfJoining.getTime() > Date.now()) {
+    return 'PENDING_JOIN' as const;
+  }
+  return employee.employmentType === 'INTERN' ? 'INTERNSHIP' as const : 'REGULAR_FULL_TIME' as const;
+}
+
+async function clearDatabase() {
+  await prisma.$executeRawUnsafe(`
+    TRUNCATE TABLE
+      "AttendanceAdjustment",
+      "AbsenceRecord",
+      "EmployeeDocument",
+      "SalaryRevision",
+      "AuditLog",
+      "SystemSetting",
+      "AttendanceRecord",
+      "AttendanceImport",
+      "PunchMapping",
+      "DeclaredWFH",
+      "WorkLog",
+      "PayslipEntry",
+      "PayrollRun",
+      "PayrollComponent",
+      "Notification",
+      "Announcement",
+      "LeaveBalance",
+      "LeaveRequest",
+      "Reimbursement",
+      "LeavePolicy",
+      "Holiday",
+      "Profile",
+      "User",
+      "ApiKey",
+      "BackupLog"
+    RESTART IDENTITY CASCADE;
+  `);
+}
+
+async function loadEmployeesFromWorkbook(): Promise<RawEmployee[]> {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(EMPLOYEE_FILE);
+
+  const worksheet = workbook.getWorksheet('Employees') ?? workbook.worksheets[0];
+  if (!worksheet) {
+    throw new Error('No Employees worksheet found in employee_import_template.xlsx');
+  }
+
+  const headerMap = new Map<string, number>();
+  worksheet.getRow(1).eachCell((cell, colNumber) => {
+    const header = normalizeText(cell.value).replace(' *', '');
+    if (header) headerMap.set(header, colNumber);
+  });
+
+  const getCell = (row: ExcelJS.Row, name: string) => {
+    const col = headerMap.get(name);
+    return col ? row.getCell(col).value : undefined;
+  };
+
+  const employees: RawEmployee[] = [];
+  const seenEmails = new Set<string>();
+  const seenEmployeeIds = new Set<string>();
+
+  for (let rowNum = 2; rowNum <= worksheet.rowCount; rowNum++) {
+    const row = worksheet.getRow(rowNum);
+    const firstName = normalizeText(getCell(row, 'First Name'));
+    const lastName = normalizeText(getCell(row, 'Last Name'));
+    const employeeId = normalizeText(getCell(row, 'Employee ID'));
+    const email = normalizeText(getCell(row, 'Email')).toLowerCase();
+    const password = normalizeText(getCell(row, 'Password'));
+
+    if (!firstName && !lastName && !employeeId && !email) continue;
+
+    if (!firstName || !lastName || !employeeId || !email || !password) {
+      throw new Error(`Row ${rowNum} is missing a required identity field`);
+    }
+
+    if (seenEmails.has(email)) {
+      throw new Error(`Duplicate email in workbook after normalization: ${email} (row ${rowNum})`);
+    }
+    if (seenEmployeeIds.has(employeeId)) {
+      throw new Error(`Duplicate employee ID in workbook: ${employeeId} (row ${rowNum})`);
+    }
+    seenEmails.add(email);
+    seenEmployeeIds.add(employeeId);
+
+    const annualCtc = Number(getCell(row, 'Annual CTC') ?? 0);
+    if (!Number.isFinite(annualCtc)) {
+      throw new Error(`Row ${rowNum} has an invalid Annual CTC value`);
+    }
+
+    employees.push({
+      firstName,
+      middleName: normalizeOptional(getCell(row, 'Middle Name')),
+      lastName,
+      employeeId,
+      email,
+      password,
+      role: normalizeRole(getCell(row, 'Role')),
+      designation: normalizeText(getCell(row, 'Designation')),
+      department: normalizeText(getCell(row, 'Department')),
+      officeLocation: normalizeOptional(getCell(row, 'Office Location')) ?? 'Kolkata',
+      dateOfJoining: parseDateValue(getCell(row, 'Date of Joining')),
+      dateOfBirth: parseDateValue(getCell(row, 'Date of Birth')),
+      gender: normalizeOptional(getCell(row, 'Gender')),
+      phone: normalizeOptional(getCell(row, 'Phone')),
+      personalEmail: normalizeOptional(getCell(row, 'Personal Email')),
+      emergencyContact: normalizeOptional(getCell(row, 'Emergency Contact')),
+      bloodGroup: normalizeOptional(getCell(row, 'Blood Group')),
+      managerEmployeeId: normalizeOptional(getCell(row, 'Manager Employee ID')),
+      annualCtc,
+      bankAccountNumber: normalizeText(getCell(row, 'Bank Account Number')),
+      ifscCode: normalizeText(getCell(row, 'IFSC Code')).toUpperCase(),
+      bankName: normalizeText(getCell(row, 'Bank Name')),
+      employmentType: normalizeEmploymentType(getCell(row, 'Employment Type')),
+      pan: normalizeOptional(getCell(row, 'PAN'))?.toUpperCase(),
+      aadharNumber: normalizeOptional(getCell(row, 'Aadhar Number')),
+      uan: normalizeOptional(getCell(row, 'UAN')),
+    });
+  }
+
+  return employees;
+}
+
+async function main() {
+  console.log('Starting company seed...');
+  console.log(`Source workbook: ${EMPLOYEE_FILE}`);
+
+  const employees = await loadEmployeesFromWorkbook();
+  if (employees.length === 0) {
+    throw new Error('Workbook contains no employee rows');
+  }
+
+  console.log(`Loaded ${employees.length} employees from workbook`);
+
+  await clearDatabase();
+  console.log('Cleared existing application data');
+
+  const createdUsers = new Map<string, string>();
+
+  for (const employee of employees) {
+    const hashedPassword = await bcrypt.hash(employee.password, 10);
+
+    const user = await prisma.user.create({
+      data: {
+        email: employee.email,
+        password: hashedPassword,
+        role: employee.role as Role,
+        isActive: true,
+        employmentStatus: deriveEmploymentStatus(employee),
+        profile: {
+          create: {
+            firstName: employee.firstName,
+            middleName: employee.middleName,
+            lastName: employee.lastName,
+            employeeId: employee.employeeId,
+            designation: employee.designation,
+            department: employee.department,
+            officeLocation: employee.officeLocation,
+            dateOfJoining: employee.dateOfJoining,
+            dateOfBirth: employee.dateOfBirth,
+            gender: employee.gender,
+            phone: employee.phone,
+            personalEmail: employee.personalEmail,
+            emergencyContact: employee.emergencyContact,
+            bloodGroup: employee.bloodGroup,
+            annualCtc: employee.annualCtc,
+            bankAccountNumber: employee.bankAccountNumber,
+            ifscCode: employee.ifscCode,
+            bankName: employee.bankName,
+            employmentType: employee.employmentType,
+            pan: employee.pan,
+            aadharNumber: employee.aadharNumber,
+            uan: employee.uan,
+          },
+        },
+      },
+      select: { id: true, profile: { select: { employeeId: true } } },
+    });
+
+    createdUsers.set(employee.employeeId, user.id);
+  }
+
+  for (const employee of employees) {
+    if (!employee.managerEmployeeId) continue;
+    const userId = createdUsers.get(employee.employeeId);
+    const managerId = createdUsers.get(employee.managerEmployeeId);
+    if (!userId || !managerId) {
+      throw new Error(`Unable to resolve manager mapping for ${employee.employeeId} -> ${employee.managerEmployeeId}`);
+    }
     await prisma.profile.update({
       where: { userId },
-      data:  { annualCtc: ctc },
+      data: { managerId },
     });
   }
 
-  console.log('✅ Seed complete!');
-  console.log(`   Admin:    admin@ewards.com / Admin@123`);
-  console.log(`   Manager:  manager@ewards.com / Employee@123`);
-  console.log(`   Employee: rahul.verma@ewards.com / Employee@123`);
-  console.log(`   Employee: sneha.roy@ewards.com / Employee@123`);
+  await prisma.leavePolicy.createMany({ data: LEAVE_POLICIES as any });
+
+  const balancePolicies = LEAVE_POLICIES.filter((policy) => !policy.isUnlimited);
+  const fyYear = currentFYYear();
+  const leaveBalanceData = Array.from(createdUsers.values()).flatMap((userId) =>
+    balancePolicies.map((policy) => ({
+      userId,
+      year: fyYear,
+      leaveType: policy.leaveType,
+      total: policy.defaultTotal,
+      used: 0,
+    }))
+  );
+  await prisma.leaveBalance.createMany({ data: leaveBalanceData });
+
+  await prisma.payrollComponent.createMany({ data: PAYROLL_COMPONENTS as any });
+  await prisma.holiday.createMany({ data: HOLIDAYS_2026 as any });
+
+  const firstAdmin = await prisma.user.findFirst({
+    where: { role: 'ADMIN' },
+    select: { id: true, email: true },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  if (firstAdmin) {
+    await prisma.announcement.create({
+      data: {
+        title: 'Athena HRMS initialized',
+        body: 'Company employee master data has been seeded from the latest import template.',
+        createdBy: firstAdmin.id,
+        isActive: true,
+      },
+    });
+  }
+
+  const roleCounts = employees.reduce<Record<string, number>>((acc, employee) => {
+    acc[employee.role] = (acc[employee.role] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  console.log('Seed complete');
+  console.log(`Employees created: ${employees.length}`);
+  console.log(`Role mix: ADMIN=${roleCounts.ADMIN ?? 0}, MANAGER=${roleCounts.MANAGER ?? 0}, EMPLOYEE=${roleCounts.EMPLOYEE ?? 0}`);
+  console.log(`FY leave balances created for ${fyYear}-${String(fyYear + 1).slice(-2)}`);
+  if (firstAdmin?.email) {
+    console.log(`Primary admin login: ${firstAdmin.email}`);
+  }
 }
 
 main()
-  .catch((e) => {
-    console.error('❌ Seed failed:', e);
+  .catch((error) => {
+    console.error('Seed failed:', error);
     process.exit(1);
   })
   .finally(async () => {

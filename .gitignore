@@ -13,3 +13,4 @@ coverage/
 ~$*
 
 apps/api/uploads/
+employee_import_template.xlsx

@@ -15,7 +15,7 @@ import { Button }  from '@/components/ui/button';
 import { Input }   from '@/components/ui/input';
 import { Label }   from '@/components/ui/label';
 import { Badge }   from '@/components/ui/badge';
-import { Loader2, Save, User, Briefcase, CreditCard, Building, FileText, Upload, ExternalLink } from 'lucide-react';
+import { Loader2, Save, User, Briefcase, CreditCard, Building, FileText, Upload, ExternalLink, KeyRound } from 'lucide-react';
 
 // PAN format: 5 uppercase letters + 4 digits + 1 uppercase letter
 const panRegex  = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
@@ -88,6 +88,14 @@ export default function Profile() {
   const [successMsg, setSuccessMsg]   = useState('');
   const [errorMsg, setErrorMsg]       = useState('');
 
+  // Change password state
+  const [currentPassword, setCurrentPassword]   = useState('');
+  const [newPassword, setNewPassword]           = useState('');
+  const [confirmPassword, setConfirmPassword]   = useState('');
+  const [changingPwd, setChangingPwd]           = useState(false);
+  const [pwdSuccess, setPwdSuccess]             = useState('');
+  const [pwdError, setPwdError]                 = useState('');
+
   // Document upload state
   const [uploadingKyc, setUploadingKyc]         = useState(false);
   const [uploadingAppt, setUploadingAppt]       = useState(false);
@@ -138,6 +146,27 @@ export default function Profile() {
       setErrorMsg(err?.response?.data?.error || 'Failed to save profile');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    setPwdSuccess('');
+    setPwdError('');
+    if (newPassword !== confirmPassword) {
+      setPwdError('New passwords do not match');
+      return;
+    }
+    setChangingPwd(true);
+    try {
+      await api.post('/auth/change-password', { currentPassword, newPassword });
+      setPwdSuccess('Password changed successfully!');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err: any) {
+      setPwdError(err?.response?.data?.error || 'Failed to change password');
+    } finally {
+      setChangingPwd(false);
     }
   };
 
@@ -439,6 +468,71 @@ export default function Profile() {
           </Button>
         </div>
       </form>
+
+      {/* Change Password */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <KeyRound className="h-4 w-4" />
+            <CardTitle className="text-base">Change Password</CardTitle>
+          </div>
+          <CardDescription>Must be 8+ characters with uppercase, lowercase, number, and special character</CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="currentPassword">Current Password</Label>
+            <Input
+              id="currentPassword"
+              type="password"
+              value={currentPassword}
+              onChange={e => setCurrentPassword(e.target.value)}
+              placeholder="Enter current password"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="newPassword">New Password</Label>
+            <Input
+              id="newPassword"
+              type="password"
+              value={newPassword}
+              onChange={e => setNewPassword(e.target.value)}
+              placeholder="Enter new password"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="confirmPassword">Confirm New Password</Label>
+            <Input
+              id="confirmPassword"
+              type="password"
+              value={confirmPassword}
+              onChange={e => setConfirmPassword(e.target.value)}
+              placeholder="Re-enter new password"
+            />
+          </div>
+        </CardContent>
+        <CardContent className="pt-0 space-y-3">
+          {pwdSuccess && (
+            <div className="bg-green-50 border border-green-200 text-green-800 rounded-md px-4 py-3 text-sm">
+              {pwdSuccess}
+            </div>
+          )}
+          {pwdError && (
+            <div className="bg-destructive/10 border border-destructive/20 text-destructive rounded-md px-4 py-3 text-sm">
+              {pwdError}
+            </div>
+          )}
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              onClick={handleChangePassword}
+              disabled={changingPwd || !currentPassword || !newPassword || !confirmPassword}
+            >
+              {changingPwd ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
+              {changingPwd ? 'Changing...' : 'Change Password'}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

@@ -19,7 +19,7 @@ import { Label }   from '@/components/ui/label';
 import {
   Loader2, Users, Search, Settings2,
   ChevronDown, ChevronUp, Check,
-  UserPlus, UserX, Eye, EyeOff, Pencil, TrendingUp, Upload, Download,
+  UserPlus, UserX, Eye, EyeOff, Pencil, TrendingUp, Upload, Download, KeyRound, Copy, X,
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -273,6 +273,11 @@ export default function Organization() {
   const [salRevisions,   setSalRevisions]   = useState<any[]>([]);
   const [loadingSalRev,  setLoadingSalRev]  = useState(false);
 
+  // Reset password state
+  const [resettingPwdId, setResettingPwdId] = useState<string | null>(null);
+  const [resetResult,    setResetResult]    = useState<{ empName: string; tempPassword: string } | null>(null);
+  const [copiedPwd,      setCopiedPwd]      = useState(false);
+
   // Bulk import state
   const [showImport,    setShowImport]    = useState(false);
   const [importFile,    setImportFile]    = useState<File | null>(null);
@@ -329,6 +334,21 @@ export default function Organization() {
       alert(err?.response?.data?.error || 'Failed to deactivate employee');
     } finally {
       setDeactivatingId(null);
+    }
+  };
+
+  // ── Reset Password ──
+  const handleResetPassword = async (emp: Employee) => {
+    const name = emp.profile ? fullName(emp.profile) : emp.email;
+    if (!confirm(`Reset password for ${name}?\n\nA temporary password will be generated. Share it with the employee so they can log in and set a new one.`)) return;
+    setResettingPwdId(emp.id);
+    try {
+      const { data } = await api.post<{ tempPassword: string }>(`/auth/reset-password/${emp.id}`);
+      setResetResult({ empName: name, tempPassword: data.tempPassword });
+    } catch (err: any) {
+      alert(err?.response?.data?.error || 'Failed to reset password');
+    } finally {
+      setResettingPwdId(null);
     }
   };
 
@@ -1183,6 +1203,18 @@ export default function Organization() {
                                 >
                                   <Pencil className="h-3.5 w-3.5" />
                                 </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 w-7 p-0 text-muted-foreground hover:text-amber-600"
+                                  disabled={resettingPwdId === emp.id}
+                                  onClick={() => handleResetPassword(emp)}
+                                  title="Reset password"
+                                >
+                                  {resettingPwdId === emp.id
+                                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    : <KeyRound className="h-3.5 w-3.5" />}
+                                </Button>
                                 {!isSelf && (
                                   <Button
                                     size="sm"
@@ -1388,6 +1420,60 @@ export default function Organization() {
               </div>
             </CardContent>
           </Card>
+        </div>
+      )}
+
+      {/* Reset Password Result Modal */}
+      {resetResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <KeyRound className="h-5 w-5" style={{ color: '#361963' }} />
+                <h3 className="font-semibold text-base">Password Reset</h3>
+              </div>
+              <button
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() => { setResetResult(null); setCopiedPwd(false); }}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <p className="text-sm text-muted-foreground">
+              Temporary password generated for <strong>{resetResult.empName}</strong>.
+              Share this with them — they should change it after logging in.
+            </p>
+
+            <div className="flex items-center gap-2 rounded-lg border px-3 py-2.5" style={{ backgroundColor: '#f5f4f9' }}>
+              <span className="flex-1 font-mono text-lg font-bold tracking-widest" style={{ color: '#361963' }}>
+                {resetResult.tempPassword}
+              </span>
+              <button
+                className="text-muted-foreground hover:text-foreground flex-shrink-0"
+                title="Copy password"
+                onClick={() => {
+                  navigator.clipboard.writeText(resetResult!.tempPassword);
+                  setCopiedPwd(true);
+                  setTimeout(() => setCopiedPwd(false), 2000);
+                }}
+              >
+                {copiedPwd ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
+              </button>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              The employee can update their password after login via <strong>My Profile → Change Password</strong>.
+            </p>
+
+            <Button
+              className="w-full text-white"
+              style={{ backgroundColor: '#361963' }}
+              onClick={() => { setResetResult(null); setCopiedPwd(false); }}
+            >
+              Done
+            </Button>
+          </div>
         </div>
       )}
     </div>

@@ -13,7 +13,8 @@
 
 import { Router, Response }  from 'express';
 import { AuthRequest, authenticate } from '../middleware/auth';
-import { prisma }             from '../index';
+import { PrismaClient }        from '@prisma/client';
+const prisma = new PrismaClient();
 
 const router = Router();
 router.use(authenticate);

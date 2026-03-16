@@ -610,7 +610,8 @@ router.post('/import', authorize(['ADMIN']), (req: AuthRequest, res: Response) =
 
     try {
       const wb = new ExcelJS.Workbook();
-      await wb.xlsx.load(req.file.buffer);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await wb.xlsx.load(req.file.buffer as any);
       const ws = wb.getWorksheet('Employees') ?? wb.worksheets[0];
       if (!ws) { res.status(400).json({ error: 'No "Employees" worksheet found in the file' }); return; }
 

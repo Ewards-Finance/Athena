@@ -36,11 +36,13 @@ export function leaveStatusColor(status: string): string {
 }
 
 // Resolve a server-relative upload path to an absolute URL.
-// In production, VITE_API_URL points to the Render backend (e.g. https://athena-api.onrender.com/api).
+// In production, VITE_API_URL or VITE_API_BASE_URL points to the Render backend
+// (for example https://athena-api.onrender.com/api).
 // We strip the trailing /api to get the base host, then prepend it to the /uploads path.
 export function resolveUploadUrl(path: string): string {
   if (!path.startsWith('/uploads')) return path;
-  const base = (import.meta.env.VITE_API_URL ?? '').replace(/\/api$/, '');
+  const apiBase = import.meta.env.VITE_API_BASE_URL ?? import.meta.env.VITE_API_URL ?? '';
+  const base = apiBase.replace(/\/api$/, '');
   return `${base}${path}`;
 }
 

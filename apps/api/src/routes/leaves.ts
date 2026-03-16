@@ -247,6 +247,7 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
       include: {
         employee: {
           select: {
+            email:   true,
             profile: { select: { firstName: true, lastName: true, employeeId: true } },
           },
         },
