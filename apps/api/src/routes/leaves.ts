@@ -262,6 +262,12 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
       return;
     }
 
+    // Cannot approve your own leave
+    if (leave.employeeId === req.user!.id) {
+      res.status(403).json({ error: 'You cannot approve your own leave request' });
+      return;
+    }
+
     // Admin's leave requests can only be approved by another Admin
     const submitter = await prisma.user.findUnique({ where: { id: leave.employeeId }, select: { role: true } });
     if (submitter?.role === 'ADMIN' && req.user!.role !== 'ADMIN') {
@@ -371,6 +377,12 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
     }
     if (leave.status !== 'PENDING') {
       res.status(400).json({ error: `Cannot reject a leave that is already ${leave.status}` });
+      return;
+    }
+
+    // Cannot reject your own leave
+    if (leave.employeeId === req.user!.id) {
+      res.status(403).json({ error: 'You cannot reject your own leave request' });
       return;
     }
 

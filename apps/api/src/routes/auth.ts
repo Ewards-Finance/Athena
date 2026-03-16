@@ -144,12 +144,7 @@ router.post('/reset-password/:userId', authenticate, async (req: AuthRequest, re
 // POST /api/auth/change-password - any logged-in user can change their own password
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(1, 'Current password is required'),
-  newPassword: z.string()
-    .min(8, 'Password must be at least 8 characters')
-    .regex(/[A-Z]/, 'Must contain an uppercase letter')
-    .regex(/[a-z]/, 'Must contain a lowercase letter')
-    .regex(/[0-9]/, 'Must contain a number')
-    .regex(/[^A-Za-z0-9]/, 'Must contain a special character'),
+  newPassword: z.string().min(6, 'Password must be at least 6 characters'),
 });
 
 router.post('/change-password', authenticate, async (req: AuthRequest, res: Response) => {

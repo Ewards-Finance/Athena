@@ -476,7 +476,7 @@ export default function Profile() {
             <KeyRound className="h-4 w-4" />
             <CardTitle className="text-base">Change Password</CardTitle>
           </div>
-          <CardDescription>Must be 8+ characters with uppercase, lowercase, number, and special character</CardDescription>
+          <CardDescription>Must be at least 6 characters</CardDescription>
         </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-2">

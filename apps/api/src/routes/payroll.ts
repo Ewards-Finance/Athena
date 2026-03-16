@@ -268,6 +268,7 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
         firstName:      true,
         lastName:       true,
         employmentType: true,
+        employeeId:     true,
       },
     });
 
@@ -480,7 +481,9 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
             const annualCtc      = emp.annualCtc ?? 0;
             const monthlyCtc    = r2(annualCtc / 12);
             const reimbursements = reimbByUser[emp.userId] ?? 0;
-            const lwpDays  = Math.min(lwpByUser[emp.userId] ?? 0, workingDays);
+            // eXXX accounts (dummy/office staff) are always treated as fully present
+            const isExxAccount = (emp.employeeId ?? '').startsWith('eXXX');
+            const lwpDays  = isExxAccount ? 0 : Math.min(lwpByUser[emp.userId] ?? 0, workingDays);
             const wfhDays  = Math.min(wfhByUser[emp.userId] ?? 0, workingDays);
             const computed = computePayslipEntry({
               monthlyCtc, annualCtc, workingDays, lwpDays, wfhDays, components: compSnaps, reimbursements,

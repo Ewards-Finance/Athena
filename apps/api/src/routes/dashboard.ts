@@ -97,6 +97,7 @@ router.get('/team', async (req: AuthRequest, res: Response) => {
       where: {
         department,
         user: { isActive: true },
+        NOT: { employeeId: { startsWith: 'eXXX' } },
       },
       select: {
         userId:      true,

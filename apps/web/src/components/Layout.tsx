@@ -186,7 +186,7 @@ export default function Layout() {
             <span className="text-white font-bold text-base">A</span>
           </div>
           <div className="flex-1">
-            <p className="font-bold text-sm text-white leading-tight">Athena HRMS</p>
+            <p className="font-bold text-sm text-white leading-tight">Athena</p>
             <p className="text-xs" style={{ color: 'rgba(255,255,255,0.55)' }}>Ewards</p>
           </div>
           {/* Close button — mobile only */}
@@ -199,7 +199,7 @@ export default function Layout() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
+        <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
           {visibleNavItems.map((item) => (
             <NavLink
               key={item.to}
