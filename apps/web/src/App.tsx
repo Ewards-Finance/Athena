@@ -4,7 +4,6 @@
  * Unauthenticated users are redirected to /login.
  */
 
-import { useEffect }              from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { useAuth }        from '@/hooks/useAuth';
 import Layout             from '@/components/Layout';
@@ -45,13 +44,6 @@ function AdminRoute() {
 }
 
 export default function App() {
-  const { initFromStorage } = useAuth();
-
-  // On app load, restore auth state from localStorage (JWT + user data)
-  useEffect(() => {
-    initFromStorage();
-  }, [initFromStorage]);
-
   return (
     <BrowserRouter>
       <Routes>

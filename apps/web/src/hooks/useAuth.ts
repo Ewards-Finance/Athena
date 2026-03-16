@@ -25,26 +25,28 @@ interface AuthState {
   initFromStorage: () => void;
 }
 
+// Read localStorage once at module load time (synchronous, before first render)
+// This prevents the flash-to-login on page refresh.
+function readStoredAuth(): { user: AuthUser | null; token: string | null } {
+  const token    = localStorage.getItem('athena_token');
+  const userJson = localStorage.getItem('athena_user');
+  if (token && userJson) {
+    try {
+      return { user: JSON.parse(userJson) as AuthUser, token };
+    } catch {
+      localStorage.removeItem('athena_token');
+      localStorage.removeItem('athena_user');
+    }
+  }
+  return { user: null, token: null };
+}
+
 export const useAuth = create<AuthState>((set) => ({
-  user:      null,
-  token:     null,
+  ...readStoredAuth(),
   isLoading: false,
 
-  // Load auth state from localStorage (called on app start)
-  initFromStorage: () => {
-    const token = localStorage.getItem('athena_token');
-    const userJson = localStorage.getItem('athena_user');
-    if (token && userJson) {
-      try {
-        const user = JSON.parse(userJson) as AuthUser;
-        set({ token, user });
-      } catch {
-        // Corrupt data — clear it
-        localStorage.removeItem('athena_token');
-        localStorage.removeItem('athena_user');
-      }
-    }
-  },
+  // No-op kept for backwards compatibility (storage is now read at module init)
+  initFromStorage: () => {},
 
   // Login: calls API, stores token in localStorage for persistence
   login: async (email: string, password: string) => {

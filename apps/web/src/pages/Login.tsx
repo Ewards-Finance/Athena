@@ -69,12 +69,7 @@ export default function Login() {
           >
             <span className="font-black text-white text-lg tracking-tight">A</span>
           </div>
-          <div>
-            <span className="font-bold text-xl tracking-tight">Athena</span>
-            <span className="ml-2 text-xs font-mono px-1.5 py-0.5 rounded" style={{ backgroundColor: 'rgba(253,140,39,0.25)', color: '#FD8C27' }}>
-              v2.0
-            </span>
-          </div>
+          <span className="font-bold text-xl tracking-tight">Athena</span>
         </div>
 
         {/* Headline */}
