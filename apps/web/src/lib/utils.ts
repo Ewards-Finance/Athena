@@ -35,6 +35,15 @@ export function leaveStatusColor(status: string): string {
   return map[status] || 'bg-gray-100 text-gray-600';
 }
 
+// Resolve a server-relative upload path to an absolute URL.
+// In production, VITE_API_URL points to the Render backend (e.g. https://athena-api.onrender.com/api).
+// We strip the trailing /api to get the base host, then prepend it to the /uploads path.
+export function resolveUploadUrl(path: string): string {
+  if (!path.startsWith('/uploads')) return path;
+  const base = (import.meta.env.VITE_API_URL ?? '').replace(/\/api$/, '');
+  return `${base}${path}`;
+}
+
 // Map claim status to a display badge color
 export function claimStatusColor(status: string): string {
   const map: Record<string, string> = {

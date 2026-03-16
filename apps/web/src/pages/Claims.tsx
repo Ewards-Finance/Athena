@@ -9,7 +9,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z }           from 'zod';
 import { useAuth }     from '@/hooks/useAuth';
 import api             from '@/lib/api';
-import { formatDate, claimStatusColor } from '@/lib/utils';
+import { formatDate, claimStatusColor, resolveUploadUrl } from '@/lib/utils';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input }  from '@/components/ui/input';
@@ -153,8 +153,7 @@ export default function Claims() {
   const isManagerOrAdmin = user?.role === 'ADMIN' || user?.role === 'MANAGER';
 
   // Absolute URL for receipts stored on our server
-  const resolveUrl = (url: string) =>
-    url.startsWith('/uploads') ? `http://localhost:3001${url}` : url;
+  const resolveUrl = resolveUploadUrl;
 
   return (
     <div className="space-y-6 max-w-5xl">

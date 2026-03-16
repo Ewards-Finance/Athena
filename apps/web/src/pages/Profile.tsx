@@ -9,7 +9,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z }           from 'zod';
 import { useAuth }     from '@/hooks/useAuth';
 import api             from '@/lib/api';
-import { formatDate }  from '@/lib/utils';
+import { formatDate, resolveUploadUrl }  from '@/lib/utils';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button }  from '@/components/ui/button';
 import { Input }   from '@/components/ui/input';
@@ -347,7 +347,7 @@ export default function Profile() {
                 </Button>
                 {profile?.kycDocumentUrl && (
                   <a
-                    href={`http://localhost:3001${profile.kycDocumentUrl}`}
+                    href={resolveUploadUrl(profile.kycDocumentUrl)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 text-xs text-blue-600 underline"
@@ -391,7 +391,7 @@ export default function Profile() {
                 </Button>
                 {profile?.appointmentLetterUrl && (
                   <a
-                    href={`http://localhost:3001${profile.appointmentLetterUrl}`}
+                    href={resolveUploadUrl(profile.appointmentLetterUrl)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 text-xs text-blue-600 underline"

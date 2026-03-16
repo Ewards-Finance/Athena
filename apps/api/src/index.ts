@@ -43,15 +43,15 @@ const app  = express();
 const PORT = process.env.PORT || 3001;
 
 // --- Middleware ---
-// Allow any origin on the local network (192.168.x.x) plus localhost.
-// For production, replace this with a strict allowlist.
+// Allowed origins: comma-separated list via CORS_ORIGINS env var.
+// Falls back to localhost:5173 for local development.
+const allowedOrigins = (process.env.CORS_ORIGINS ?? 'http://localhost:5173')
+  .split(',').map(s => s.trim());
+
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (curl, Postman) and any local network origin
-    if (!origin) return callback(null, true);
-    const isLocalhost = origin.includes('localhost') || origin.includes('127.0.0.1');
-    const isLAN       = /^https?:\/\/192\.168\.\d+\.\d+/.test(origin);
-    callback(null, isLocalhost || isLAN);
+    if (!origin) return callback(null, true); // curl/Postman
+    callback(null, allowedOrigins.includes(origin));
   },
   credentials: true,
 }));

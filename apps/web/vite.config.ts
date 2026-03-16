@@ -8,12 +8,12 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['athena-icon.svg'],
+      includeAssets: ['athena-icon.svg', 'athena-icon-192.png', 'athena-icon-512.png'],
       manifest: {
         name: 'Athena HRMS',
         short_name: 'Athena',
         description: 'HR Management System by Ewards',
-        theme_color: '#0f172a',
+        theme_color: '#361963',
         background_color: '#0f172a',
         display: 'standalone',
         scope: '/',
@@ -21,9 +21,14 @@ export default defineConfig({
         orientation: 'portrait',
         icons: [
           {
-            src: 'athena-icon.svg',
-            sizes: 'any',
-            type: 'image/svg+xml',
+            src: 'athena-icon-192.png',
+            sizes: '192x192',
+            type: 'image/png',
+          },
+          {
+            src: 'athena-icon-512.png',
+            sizes: '512x512',
+            type: 'image/png',
             purpose: 'any maskable',
           },
         ],

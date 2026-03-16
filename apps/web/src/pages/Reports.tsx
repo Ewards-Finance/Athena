@@ -39,7 +39,7 @@ function SimpleBar({ label, count, max, color }: { label: string; count: number;
   const pct = max > 0 ? (count / max) * 100 : 0;
   return (
     <div className="flex items-center gap-3 text-sm">
-      <span className="w-40 truncate text-right text-muted-foreground">{label}</span>
+      <span className="w-24 md:w-40 truncate text-right text-muted-foreground">{label}</span>
       <div className="flex-1 bg-gray-100 rounded-full h-3 overflow-hidden">
         <div className="h-3 rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: color }} />
       </div>
@@ -519,18 +519,18 @@ export default function Reports() {
   const [tab, setTab] = useState<Tab>('Daily Attendance');
 
   return (
-    <div className="p-6 space-y-5">
+    <div className="p-3 md:p-6 space-y-5">
       <div>
         <h1 className="text-2xl font-semibold">Reports &amp; Analytics</h1>
         <p className="text-sm text-muted-foreground mt-0.5">Workforce, attendance, and payroll insights</p>
       </div>
 
-      <div className="flex gap-1 border-b">
+      <div className="flex gap-1 border-b overflow-x-auto">
         {tabs.map((t) => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px whitespace-nowrap flex-shrink-0 ${
               tab === t.key
                 ? 'border-[#361963] text-[#361963]'
                 : 'border-transparent text-muted-foreground hover:text-foreground'

@@ -126,19 +126,19 @@ export default function Search() {
   ];
 
   return (
-    <div className="p-6 space-y-5 max-w-5xl">
+    <div className="p-3 md:p-6 space-y-5 max-w-5xl">
       <div>
         <h1 className="text-2xl font-semibold">Search</h1>
         <p className="text-sm text-muted-foreground mt-0.5">Search across employees, leaves, claims, and documents</p>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b">
+      <div className="flex gap-1 border-b overflow-x-auto">
         {tabs.map((t) => (
           <button
             key={t.key}
             onClick={() => handleTabChange(t.key)}
-            className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap flex-shrink-0 ${
               tab === t.key
                 ? 'border-[#361963] text-[#361963]'
                 : 'border-transparent text-muted-foreground hover:text-foreground'
@@ -191,7 +191,13 @@ export default function Search() {
                   <option value="">All Statuses</option>
                   {LEAVE_STATUSES.map((s) => <option key={s} value={s}>{fmt(s)}</option>)}
                 </select>
-                <Input type="text" placeholder="Leave type (e.g. CL)" className="h-8 w-36 text-sm" value={leaveType} onChange={(e) => setLeaveType(e.target.value)} />
+                <select className="border rounded px-2 py-1 text-sm bg-white" value={leaveType} onChange={(e) => setLeaveType(e.target.value)}>
+                  <option value="">All Leave Types</option>
+                  <option value="PL">Paid Leave</option>
+                  <option value="LWP">Unpaid Leave</option>
+                  <option value="TEMPORARY_WFH">Temporary WFH</option>
+                  <option value="TRAVELLING">Travelling</option>
+                </select>
                 <Input type="date" className="h-8 w-36 text-sm" value={fromDate} onChange={(e) => setFromDate(e.target.value)} title="From date" />
                 <Input type="date" className="h-8 w-36 text-sm" value={toDate} onChange={(e) => setToDate(e.target.value)} title="To date" />
               </>
@@ -242,7 +248,7 @@ export default function Search() {
                   <p className="text-xs text-muted-foreground">{emp.profile?.designation} · {emp.profile?.department}</p>
                   <p className="text-xs text-muted-foreground">{emp.email}</p>
                 </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
+                <div className="flex flex-wrap items-center gap-1.5 flex-shrink-0 justify-end max-w-[160px] sm:max-w-none">
                   <Badge className="text-xs">{fmt(emp.role)}</Badge>
                   <Badge className={`text-xs ${EMP_STATUS_COLORS[emp.employmentStatus] ?? ''}`}>{fmt(emp.employmentStatus)}</Badge>
                   <Badge className="text-xs bg-purple-50 text-purple-700">{fmt(emp.profile?.employmentType ?? '')}</Badge>
