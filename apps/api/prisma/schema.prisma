@@ -15,6 +15,8 @@ model User {
   role              Role               @default(EMPLOYEE)
   isActive          Boolean            @default(true)
   employmentStatus  EmploymentStatus   @default(REGULAR_FULL_TIME)
+  adminScope        String?            // "GROUP_ADMIN" | "PAYROLL_ADMIN" | "HR_ADMIN"
+  visibilityScope   String?            // "ALL_COMPANIES" | "ASSIGNED_COMPANIES_ONLY"
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   attendanceRecords AttendanceRecord[]
@@ -33,6 +35,14 @@ model User {
   documents            EmployeeDocument[]
   absenceRecords       AbsenceRecord[]
   attendanceAdjustments AttendanceAdjustment[]
+  companyAssignments    EmployeeCompanyAssignment[]
+  managedAssignments   EmployeeCompanyAssignment[] @relation("AssignmentManager")
+  policyAcknowledgements PolicyAcknowledgement[]
+  exitRequest          ExitRequest?
+  assetAssignments     AssetAssignment[]
+  loanRequests         LoanRequest[]
+  compOffs             CompOff[]
+  travelProofs         TravelProof[]
 }
 
 model Profile {
@@ -46,6 +56,7 @@ model Profile {
   bloodGroup           String?
   personalEmail        String?
   phone                String?
+  secondaryPhone       String?
   emergencyContact     String?
   employeeId           String    @unique
   designation          String    @default("")
@@ -88,6 +99,7 @@ model LeaveRequest {
   endDayType     String?
   employee       User        @relation("EmployeeLeaves", fields: [employeeId], references: [id])
   manager        User?       @relation("ManagerApprovals", fields: [managerId], references: [id])
+  travelProofs   TravelProof[]
 }
 
 model Reimbursement {
@@ -128,14 +140,19 @@ model Holiday {
 }
 
 model LeavePolicy {
-  id           String   @id @default(cuid())
-  leaveType    String   @unique
-  label        String
-  defaultTotal Int
-  isActive     Boolean  @default(true)
-  isUnlimited  Boolean  @default(false) // true for TEMPORARY_WFH and TRAVELLING — no balance tracking
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  leaveType           String   @unique
+  label               String
+  defaultTotal        Int
+  isActive            Boolean  @default(true)
+  isUnlimited         Boolean  @default(false) // true for TEMPORARY_WFH and TRAVELLING — no balance tracking
+  documentRequired    Boolean  @default(false)  // medical doc required for this leave type
+  documentAfterDays   Int?                      // doc required only if leave > X days (e.g. 2 for SL)
+  carryForwardEnabled Boolean  @default(false)
+  carryForwardMaxDays Int?                      // max days that can carry over to next year
+  encashable          Boolean  @default(false)  // can be encashed on exit
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 }
 
 model Announcement {
@@ -173,36 +190,50 @@ model PayrollComponent {
 }
 
 model PayrollRun {
-  id          String         @id @default(cuid())
-  month       Int
-  year        Int
-  status      PayrollStatus  @default(DRAFT)
-  processedBy String
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-  entries     PayslipEntry[]
+  id              String          @id @default(cuid())
+  month           Int
+  year            Int
+  status          PayrollStatus   @default(DRAFT)
+  processedBy     String
+  companyId       String?
+  company         Company?        @relation(fields: [companyId], references: [id])
+  policyVersionId String?
+  policyVersion   PolicyVersion?  @relation(fields: [policyVersionId], references: [id])
+  runType         PayrollRunType  @default(REGULAR)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  entries         PayslipEntry[]
 
-  @@unique([month, year])
+  @@unique([month, year, companyId])
 }
 
 model PayslipEntry {
-  id              String     @id @default(cuid())
-  payrollRunId    String
-  userId          String
-  monthlyCtc      Float
-  workingDays     Int
-  lwpDays         Float      @default(0)
-  paidDays        Float
-  earnings        Json
-  deductions      Json
-  reimbursements  Float      @default(0)
-  grossPay        Float
-  totalDeductions Float
-  netPay          Float
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-  payrollRun      PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
-  user            User       @relation(fields: [userId], references: [id])
+  id                  String     @id @default(cuid())
+  payrollRunId        String
+  userId              String
+  monthlyCtc          Float
+  workingDays         Int
+  lwpDays             Float      @default(0)
+  paidDays            Float
+  earnings            Json
+  deductions          Json
+  reimbursements      Float      @default(0)
+  grossPay            Float
+  totalDeductions     Float
+  netPay              Float
+  // Company snapshot (stamped at payroll time, immutable)
+  companyLegalName    String?
+  companyAddress      String?
+  companyPan          String?
+  employeeCode        String?
+  designationSnapshot String?
+  // Arrears
+  arrearsAmount       Float?     @default(0)
+  arrearsNote         String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  payrollRun          PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  user                User       @relation(fields: [userId], references: [id])
 
   @@unique([payrollRunId, userId])
 }
@@ -284,7 +315,113 @@ model AttendanceRecord {
   @@unique([userId, date])
 }
 
+// ─── V3.1 New Models ─────────────────────────────────────────────────────────
+
+model Company {
+  id            String   @id @default(cuid())
+  code          String   @unique  // e.g. "EWARDS-ENGAGEMENT"
+  legalName     String            // Full legal name on payslip
+  displayName   String            // Short name for UI
+  payrollPrefix String?           // e.g. "EE" for employee codes
+  pan           String?
+  tan           String?
+  gstin         String?
+  addressLine1  String?
+  addressLine2  String?
+  city          String?
+  state         String?
+  pincode       String?
+  logoUrl       String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  assignments     EmployeeCompanyAssignment[]
+  payrollRuns     PayrollRun[]
+  policyVersions  PolicyVersion[]
+}
+
+model EmployeeCompanyAssignment {
+  id                 String           @id @default(cuid())
+  userId             String
+  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId          String
+  company            Company          @relation(fields: [companyId], references: [id])
+  employeeCode       String?          // Company-specific employee code
+  designation        String?          // May differ from group-level designation
+  department         String?
+  reportingManagerId String?
+  reportingManager   User?            @relation("AssignmentManager", fields: [reportingManagerId], references: [id])
+  annualCTC          Float?           // CTC under this assignment
+  employmentType     String?          // may differ per assignment
+  joiningDate        DateTime?        // date joined THIS company (not group)
+  effectiveFrom      DateTime         // when this assignment started
+  effectiveTo        DateTime?        // null = currently active
+  isPrimary          Boolean          @default(true)
+  status             AssignmentStatus @default(ACTIVE)
+  notes              String?          // reason for transfer, etc.
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@index([userId, status])
+  @@index([companyId])
+}
+
+enum PolicyScope {
+  GLOBAL           // applies to all companies (default)
+  COMPANY_SPECIFIC // overrides global for a specific company
+}
+
+model PolicyVersion {
+  id             String      @id @default(cuid())
+  name           String
+  versionCode    String      @unique
+  effectiveFrom  DateTime
+  effectiveTo    DateTime?
+  isActive       Boolean     @default(false)
+  scope          PolicyScope @default(GLOBAL)
+  companyId      String?     // only set when scope = COMPANY_SPECIFIC
+  company        Company?    @relation(fields: [companyId], references: [id])
+  notes          String?
+  publishedBy    String?
+  publishedAt    DateTime?
+  createdAt      DateTime    @default(now())
+
+  rules            PolicyRule[]
+  payrollRuns      PayrollRun[]
+  acknowledgements PolicyAcknowledgement[]
+}
+
+model PolicyRule {
+  id              String        @id @default(cuid())
+  policyVersionId String
+  policyVersion   PolicyVersion @relation(fields: [policyVersionId], references: [id], onDelete: Cascade)
+  ruleKey         String        // e.g. "wfh_deduction_pct"
+  ruleValue       String        // e.g. "30"
+  valueType       String        // "number" | "boolean" | "string" | "time"
+  description     String?
+  createdAt       DateTime      @default(now())
+
+  @@unique([policyVersionId, ruleKey])
+}
+
+model PolicyAcknowledgement {
+  id              String        @id @default(cuid())
+  policyVersionId String
+  policyVersion   PolicyVersion @relation(fields: [policyVersionId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  acknowledgedAt  DateTime?
+  isAcknowledged  Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+
+  @@unique([policyVersionId, userId])
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
 enum Role {
+  OWNER
   ADMIN
   MANAGER
   EMPLOYEE
@@ -326,7 +463,13 @@ enum CalcType {
 
 enum PayrollStatus {
   DRAFT
+  SUBMITTED
   FINALIZED
+}
+
+enum PayrollRunType {
+  REGULAR
+  FULL_AND_FINAL
 }
 
 enum EmploymentStatus {
@@ -338,20 +481,28 @@ enum EmploymentStatus {
   INACTIVE
 }
 
+enum AssignmentStatus {
+  ACTIVE
+  TRANSFERRED
+  CLOSED
+}
+
 model AuditLog {
-  id        String   @id @default(cuid())
-  actorId   String
-  action    String
-  entity    String
-  entityId  String?
+  id            String   @id @default(cuid())
+  actorId       String
+  action        String
+  entity        String
+  entityId      String?
   subjectEntity String?
   subjectId     String?
   subjectLabel  String?
   subjectMeta   Json?
-  oldValues Json?
-  newValues Json?
-  createdAt DateTime @default(now())
-  actor     User     @relation(fields: [actorId], references: [id])
+  oldValues     Json?
+  newValues     Json?
+  reason        String?       // mandatory for sensitive actions
+  changeSource  String?       // "WEB" | "IMPORT" | "API" | "WHATSAPP"
+  createdAt     DateTime @default(now())
+  actor         User     @relation(fields: [actorId], references: [id])
 }
 
 model SystemSetting {
@@ -383,6 +534,9 @@ model EmployeeDocument {
   fileUrl     String
   description String?
   uploadedBy  String
+  expiryDate  DateTime?   // for contract, visa, medical cert, etc.
+  isRequired  Boolean     @default(false) // mandatory document flag
+  reminderSentAt DateTime? // last expiry reminder sent
   createdAt   DateTime    @default(now())
   user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -451,4 +605,229 @@ model AttendanceAdjustment {
   user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, month, year])
+}
+
+// ─── V3.1 Sprint 2: Exit Management ──────────────────────────────────────────
+
+model ExitRequest {
+  id               String     @id @default(cuid())
+  userId           String     @unique
+  user             User       @relation(fields: [userId], references: [id])
+  initiatedBy      String     // userId — self-resignation or admin-initiated
+  reason           String
+  lastWorkingDate  DateTime
+  noticePeriodDays Int        // configurable per exit
+  buyoutDays       Int?       // days bought out (reduces notice period)
+  buyoutAmount     Float?     // recovery deducted in final settlement
+  status           ExitStatus @default(INITIATED)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  clearances       ExitClearance[]
+  settlement       FinalSettlement?
+}
+
+model ExitClearance {
+  id            String          @id @default(cuid())
+  exitRequestId String
+  exitRequest   ExitRequest     @relation(fields: [exitRequestId], references: [id], onDelete: Cascade)
+  department    String          // "IT" | "Finance" | "HR" | "Admin" | "Manager"
+  clearedBy     String?         // userId of who cleared
+  status        ClearanceStatus @default(PENDING)
+  remarks       String?
+  clearedAt     DateTime?
+  createdAt     DateTime        @default(now())
+}
+
+model FinalSettlement {
+  id                      String      @id @default(cuid())
+  exitRequestId           String      @unique
+  exitRequest             ExitRequest @relation(fields: [exitRequestId], references: [id], onDelete: Cascade)
+
+  // Earnings
+  lastMonthSalaryProrated Float       // pro-rated salary for final partial month
+  leaveEncashmentDays     Float       // balance days eligible for encashment
+  leaveEncashmentAmount   Float
+  pendingClaimsAmount     Float       @default(0)
+  arrearsPending          Float       @default(0)
+  bonusPending            Float       @default(0)
+
+  // Deductions
+  noticePeriodRecovery    Float       @default(0)  // if left short of notice
+  loanOutstanding         Float       @default(0)  // remaining loan balance
+  otherDeductions         Float       @default(0)
+
+  totalPayable            Float       // = earnings - deductions
+  processedBy             String?     // userId
+  processedAt             DateTime?
+  createdAt               DateTime    @default(now())
+}
+
+enum ExitStatus {
+  INITIATED
+  NOTICE_PERIOD
+  CLEARANCE_PENDING
+  SETTLED
+  CANCELLED
+}
+
+enum ClearanceStatus {
+  PENDING
+  CLEARED
+}
+
+// ─── V3.1 Sprint 2: Asset Management ─────────────────────────────────────────
+
+model Asset {
+  id            String        @id @default(cuid())
+  name          String        // "MacBook Pro 14"
+  assetTag      String        @unique // "EWRD-LAP-001"
+  category      AssetCategory
+  serialNumber  String?
+  purchaseDate  DateTime?
+  purchaseCost  Float?
+  status        AssetStatus   @default(AVAILABLE)
+  notes         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  assignments   AssetAssignment[]
+}
+
+model AssetAssignment {
+  id           String    @id @default(cuid())
+  assetId      String
+  asset        Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User      @relation(fields: [userId], references: [id])
+  assignedAt   DateTime  @default(now())
+  returnedAt   DateTime?
+  conditionOut String?   // condition when issued
+  conditionIn  String?   // condition when returned
+  notes        String?
+  assignedBy   String    // userId of admin
+
+  @@index([assetId])
+  @@index([userId])
+}
+
+enum AssetCategory {
+  LAPTOP
+  PHONE
+  CHARGER
+  MONITOR
+  KEYBOARD
+  MOUSE
+  SIM_CARD
+  ACCESS_CARD
+  ID_CARD
+  SOFTWARE_LICENSE
+  OTHER
+}
+
+enum AssetStatus {
+  AVAILABLE
+  ASSIGNED
+  UNDER_REPAIR
+  RETIRED
+}
+
+// ─── V3.1 Sprint 2: Import Batch ─────────────────────────────────────────────
+
+model ImportBatch {
+  id          String       @id @default(cuid())
+  type        ImportType
+  uploadedBy  String
+  fileName    String
+  totalRows   Int
+  successRows Int          @default(0)
+  failedRows  Int          @default(0)
+  status      ImportStatus @default(PREVIEWED)
+  errorLog    String?      // JSON string of row-level errors
+  notes       String?      // JSON string of parsed data for preview/commit flow
+  createdAt   DateTime     @default(now())
+}
+
+enum ImportType {
+  ATTENDANCE
+  EMPLOYEE_BULK
+  ASSET_BULK
+}
+
+enum ImportStatus {
+  PREVIEWED
+  IMPORTED
+  PARTIALLY_IMPORTED
+  ROLLED_BACK
+}
+
+// ─── V3.1 Sprint 3: Loans ──────────────────────────────────────────────────────
+
+model LoanRequest {
+  id               String     @id @default(cuid())
+  userId           String
+  user             User       @relation(fields: [userId], references: [id])
+  amount           Float
+  installments     Int        // number of months for deduction
+  monthlyEMI       Float      // computed: amount / installments
+  reason           String
+  status           LoanStatus @default(PENDING)
+  approvedBy       String?
+  approvedAt       DateTime?
+  startMonth       Int?       // 1-12, month EMI deductions start
+  startYear        Int?
+  paidInstallments Int        @default(0)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+}
+
+enum LoanStatus {
+  PENDING
+  APPROVED
+  ACTIVE
+  CLOSED
+  REJECTED
+}
+
+// ─── V3.1 Sprint 3: Comp-Off ────────────────────────────────────────────────────
+
+model CompOff {
+  id          String        @id @default(cuid())
+  userId      String
+  user        User          @relation(fields: [userId], references: [id])
+  earnedDate  DateTime      // holiday/weekend day they worked on
+  reason      String
+  status      CompOffStatus @default(PENDING)
+  approvedBy  String?
+  usedOn      DateTime?     // date they consumed comp-off as leave
+  expiresAt   DateTime      // earnedDate + compoff_expiry_days from PolicyRule
+  createdAt   DateTime      @default(now())
+
+  @@unique([userId, earnedDate])
+}
+
+enum CompOffStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  USED
+}
+
+// ─── V3.1 Sprint 3: Travel Proof ────────────────────────────────────────────────
+
+model TravelProof {
+  id              String       @id @default(cuid())
+  leaveRequestId  String
+  leaveRequest    LeaveRequest @relation(fields: [leaveRequestId], references: [id])
+  userId          String
+  user            User         @relation(fields: [userId], references: [id])
+  proofDate       DateTime     // the specific travel day this proof covers
+  geoLat          Float?       // GPS latitude
+  geoLng          Float?       // GPS longitude
+  mapsLink        String?      // https://maps.google.com/?q={lat},{lng}
+  submittedAt     DateTime?
+  createdAt       DateTime     @default(now())
+
+  @@unique([leaveRequestId, proofDate])
 }

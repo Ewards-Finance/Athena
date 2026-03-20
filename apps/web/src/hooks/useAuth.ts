@@ -9,7 +9,7 @@ import api from '@/lib/api';
 interface AuthUser {
   id:         string;
   email:      string;
-  role:       'ADMIN' | 'MANAGER' | 'EMPLOYEE';
+  role:       'OWNER' | 'ADMIN' | 'MANAGER' | 'EMPLOYEE';
   firstName?: string;
   lastName?:  string;
   employeeId?: string;

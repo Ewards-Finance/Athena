@@ -491,17 +491,180 @@ function DailyAttendance() {
   );
 }
 
+// ─── Statutory Export (TDS / PT) ─────────────────────────────────────────────
+
+function StatutoryReport() {
+  const now = new Date();
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [year, setYear] = useState(now.getFullYear());
+  const [type, setType] = useState<'TDS' | 'PT'>('TDS');
+  const [companyId, setCompanyId] = useState('');
+  const [companies, setCompanies] = useState<any[]>([]);
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    api.get('/companies').then(r => setCompanies(r.data)).catch(() => {});
+  }, []);
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      const params = new URLSearchParams({ month: String(month), year: String(year), type });
+      if (companyId) params.set('companyId', companyId);
+      const res = await api.get(`/reports/statutory?${params.toString()}`, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${type}_Report_${MONTHS[month - 1]}_${year}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      alert('Failed to download. Ensure payroll exists for the selected period.');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Statutory Export</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-3 items-end">
+            <div>
+              <label className="block text-sm font-medium mb-1">Type</label>
+              <select value={type} onChange={e => setType(e.target.value as any)} className="border rounded-md px-3 py-2 text-sm">
+                <option value="TDS">TDS</option>
+                <option value="PT">Professional Tax</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Month</label>
+              <select value={month} onChange={e => setMonth(Number(e.target.value))} className="border rounded-md px-3 py-2 text-sm">
+                {MONTHS.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Year</label>
+              <select value={year} onChange={e => setYear(Number(e.target.value))} className="border rounded-md px-3 py-2 text-sm">
+                {[2024, 2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Company</label>
+              <select value={companyId} onChange={e => setCompanyId(e.target.value)} className="border rounded-md px-3 py-2 text-sm">
+                <option value="">All Companies</option>
+                {companies.map((c: any) => <option key={c.id} value={c.id}>{c.displayName}</option>)}
+              </select>
+            </div>
+            <Button
+              style={{ backgroundColor: '#361963' }}
+              className="text-white"
+              disabled={downloading}
+              onClick={handleDownload}
+            >
+              {downloading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Export .xlsx
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Downloads the {type === 'TDS' ? 'TDS deduction' : 'Professional Tax'} report as an Excel file for the selected period.
+          </p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+// ─── Import History ──────────────────────────────────────────────────────────
+
+function ImportHistoryReport() {
+  const [batches, setBatches] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchBatches = () => {
+    setLoading(true);
+    api.get('/attendance/imports')
+      .then(r => setBatches(r.data))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { fetchBatches(); }, []);
+
+  const statusColor: Record<string, string> = {
+    PREVIEWED: 'bg-yellow-100 text-yellow-700',
+    IMPORTED: 'bg-green-100 text-green-700',
+    PARTIALLY_IMPORTED: 'bg-orange-100 text-orange-700',
+    ROLLED_BACK: 'bg-gray-100 text-gray-500',
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Import History</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="flex items-center gap-2 text-gray-500 py-4"><Loader2 className="h-5 w-5 animate-spin" /> Loading...</div>
+          ) : batches.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-4">No imports found.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b">
+                    <th className="py-2 pr-4">File</th>
+                    <th className="py-2 pr-4">Month/Year</th>
+                    <th className="py-2 pr-4">Records</th>
+                    <th className="py-2 pr-4">Unmapped</th>
+                    <th className="py-2 pr-4">Status</th>
+                    <th className="py-2">Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {batches.map((b: any) => (
+                    <tr key={b.id} className="border-b last:border-0">
+                      <td className="py-2 pr-4 font-medium">{b.fileName}</td>
+                      <td className="py-2 pr-4">{MONTHS[b.month - 1]} {b.year}</td>
+                      <td className="py-2 pr-4">{b.recordCount ?? b._count?.records ?? '—'}</td>
+                      <td className="py-2 pr-4">{Array.isArray(b.unmappedEnNos) ? b.unmappedEnNos.length : '—'}</td>
+                      <td className="py-2 pr-4">
+                        <Badge className={b.arrivalTime ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}>
+                          {b.arrivalTime ? 'Policy Applied' : 'Imported'}
+                        </Badge>
+                      </td>
+                      <td className="py-2 text-gray-500">{new Date(b.createdAt).toLocaleDateString('en-IN')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export default function Reports() {
   const { user } = useAuth();
-  const isAdmin = user?.role === 'ADMIN';
+  const isAdmin = user?.role === 'ADMIN' || user?.role === 'OWNER';
 
-  type Tab = 'Daily Attendance' | 'HR Overview' | 'Attendance' | 'Payroll';
+  type Tab = 'Daily Attendance' | 'HR Overview' | 'Attendance' | 'Payroll' | 'Statutory' | 'Import History';
 
   const allTabs: { key: Tab; adminOnly: boolean }[] = [
     { key: 'Daily Attendance', adminOnly: false },
     { key: 'HR Overview', adminOnly: true },
     { key: 'Attendance', adminOnly: true },
     { key: 'Payroll', adminOnly: true },
+    { key: 'Statutory', adminOnly: true },
+    { key: 'Import History', adminOnly: true },
   ];
   const tabs = allTabs.filter((t) => !t.adminOnly || isAdmin);
 
@@ -534,6 +697,8 @@ export default function Reports() {
       {tab === 'HR Overview' && <HRReport />}
       {tab === 'Attendance' && <AttendanceReport />}
       {tab === 'Payroll' && <PayrollReport />}
+      {tab === 'Statutory' && <StatutoryReport />}
+      {tab === 'Import History' && <ImportHistoryReport />}
     </div>
   );
 }

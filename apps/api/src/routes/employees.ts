@@ -51,7 +51,7 @@ const profileUpdateSchema = z.object({
   managerId:        z.string().optional(),
 
   // Admin-only: change the user's role
-  role:             z.enum(['EMPLOYEE', 'MANAGER', 'ADMIN']).optional(),
+  role:             z.enum(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']).optional(),
 
   // Statutory fields — validated with regex
   pan:              z.string().regex(panRegex, 'Invalid PAN format. Expected: AAAAA1234A').optional(),
@@ -86,7 +86,7 @@ const passwordSchema = z.string().min(6, 'Password must be at least 6 characters
 const createEmployeeSchema = z.object({
   email:             z.string().email(),
   password:          passwordSchema,
-  role:              z.enum(['EMPLOYEE', 'MANAGER', 'ADMIN']).default('EMPLOYEE'),
+  role:              z.enum(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']).default('EMPLOYEE'),
   firstName:         z.string().min(1),
   middleName:        z.string().optional(),
   lastName:          z.string().min(1),
@@ -136,6 +136,17 @@ router.get('/', authorize(['ADMIN', 'MANAGER']), async (_req, res: Response) => 
             managerId:       true,
             annualCtc:       true,
             employmentType:  true,
+          },
+        },
+        companyAssignments: {
+          where: { status: 'ACTIVE' },
+          take: 1,
+          select: {
+            id: true,
+            designation: true,
+            department: true,
+            annualCTC: true,
+            company: { select: { id: true, code: true, displayName: true } },
           },
         },
       },

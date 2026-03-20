@@ -4,11 +4,12 @@
  * Tab 2: Leave Quota Management — set per-employee annual leave totals
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm }     from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z }           from 'zod';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { useAuth }     from '@/hooks/useAuth';
 import api             from '@/lib/api';
 import { formatDate }  from '@/lib/utils';
@@ -21,6 +22,7 @@ import {
   Loader2, Users, Search, Settings2,
   ChevronDown, ChevronUp, Check,
   UserPlus, UserX, Eye, EyeOff, Pencil, TrendingUp, Upload, Download, KeyRound, Copy, X,
+  Building2, ArrowLeftRight,
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -43,6 +45,15 @@ interface Employee {
     annualCtc?:       number | null;
     employmentType?:  string;
   };
+  companyAssignments?: {
+    company: { id: string; code: string; displayName: string };
+  }[];
+}
+
+interface CompanyOption {
+  id: string;
+  code: string;
+  displayName: string;
 }
 
 const EMPLOYMENT_STATUS_OPTIONS = [
@@ -246,7 +257,14 @@ function QuotaRow({ user, year, policyTypes }: { user: OverviewUser; year: numbe
 export default function Organization() {
   const { user: currentUser }   = useAuth();
   const queryClient             = useQueryClient();
+  const navigate                = useNavigate();
   const [search, setSearch]     = useState('');
+  const [companyFilter, setCompanyFilter] = useState('');
+  const [companies, setCompanies] = useState<CompanyOption[]>([]);
+
+  useEffect(() => {
+    api.get('/companies').then(r => setCompanies(r.data)).catch(() => {});
+  }, []);
 
   // Employment status change state
   const [statusEmp,      setStatusEmp]      = useState<Employee | null>(null);
@@ -478,7 +496,7 @@ export default function Organization() {
 
   const filtered = employees.filter((emp) => {
     const q = search.toLowerCase();
-    return (
+    const matchesSearch = (
       emp.profile?.firstName?.toLowerCase().includes(q) ||
       emp.profile?.middleName?.toLowerCase().includes(q) ||
       emp.profile?.lastName?.toLowerCase().includes(q) ||
@@ -486,6 +504,8 @@ export default function Organization() {
       emp.profile?.department?.toLowerCase().includes(q) ||
       emp.email?.toLowerCase().includes(q)
     );
+    const matchesCompany = !companyFilter || emp.companyAssignments?.[0]?.company?.id === companyFilter;
+    return matchesSearch && matchesCompany;
   });
 
   // Managers available for reporting-manager dropdown
@@ -1081,15 +1101,29 @@ export default function Organization() {
             </Card>
           )}
 
-          {/* ── Search ── */}
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search by name, ID, department, or email..."
-              className="pl-9"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+          {/* ── Search + Company Filter ── */}
+          <div className="flex gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search by name, ID, department, or email..."
+                className="pl-9"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            {companies.length > 0 && (
+              <select
+                className="h-10 border rounded-md px-3 text-sm bg-background min-w-[180px]"
+                value={companyFilter}
+                onChange={(e) => setCompanyFilter(e.target.value)}
+              >
+                <option value="">All Companies</option>
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>{c.displayName}</option>
+                ))}
+              </select>
+            )}
           </div>
 
           {/* ── Directory Table ── */}
@@ -1114,6 +1148,7 @@ export default function Organization() {
                       <tr className="border-b text-muted-foreground">
                         <th className="text-left pb-3 pr-4 font-medium">Employee</th>
                         <th className="text-left pb-3 pr-4 font-medium">ID</th>
+                        <th className="text-left pb-3 pr-4 font-medium">Company</th>
                         <th className="text-left pb-3 pr-4 font-medium">Department</th>
                         <th className="text-left pb-3 pr-4 font-medium">Designation</th>
                         <th className="text-left pb-3 pr-4 font-medium">Joined</th>
@@ -1137,6 +1172,11 @@ export default function Organization() {
                               <p className="text-xs text-muted-foreground">{emp.email}</p>
                             </td>
                             <td className="py-3 pr-4 font-mono text-xs">{emp.profile?.employeeId || '—'}</td>
+                            <td className="py-3 pr-4">
+                              <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700">
+                                {emp.companyAssignments?.[0]?.company?.displayName || '—'}
+                              </span>
+                            </td>
                             <td className="py-3 pr-4">{emp.profile?.department || '—'}</td>
                             <td className="py-3 pr-4">{emp.profile?.designation || '—'}</td>
                             <td className="py-3 pr-4 text-muted-foreground">
@@ -1181,6 +1221,15 @@ export default function Organization() {
                             </td>
                             <td className="py-3 text-right">
                               <div className="flex items-center justify-end gap-1">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-7 w-7 p-0 text-muted-foreground hover:text-indigo-600"
+                                  onClick={() => navigate(`/assignments/${emp.id}`)}
+                                  title="View assignments / Transfer"
+                                >
+                                  <ArrowLeftRight className="h-3.5 w-3.5" />
+                                </Button>
                                 <Button
                                   size="sm"
                                   variant="ghost"

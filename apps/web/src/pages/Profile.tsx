@@ -15,7 +15,8 @@ import { Button }  from '@/components/ui/button';
 import { Input }   from '@/components/ui/input';
 import { Label }   from '@/components/ui/label';
 import { Badge }   from '@/components/ui/badge';
-import { Loader2, Save, User, Briefcase, CreditCard, Building, FileText, Upload, ExternalLink, KeyRound } from 'lucide-react';
+import { Loader2, Save, User, Briefcase, CreditCard, Building, FileText, Upload, ExternalLink, KeyRound, CalendarPlus, Landmark } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 
 // PAN format: 5 uppercase letters + 4 digits + 1 uppercase letter
 const panRegex  = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
@@ -69,6 +70,14 @@ interface ReportsTo {
   employeeId: string;
 }
 
+interface CompanyAssignment {
+  company: { displayName: string; code: string };
+  designation: string | null;
+  department: string | null;
+  effectiveFrom: string;
+  status: string;
+}
+
 // Simple info row for read-only display
 function InfoRow({ label, value }: { label: string; value?: string | null }) {
   return (
@@ -83,6 +92,7 @@ export default function Profile() {
   const { user }                      = useAuth();
   const [profile, setProfile]         = useState<ProfileData | null>(null);
   const [reportsTo, setReportsTo]     = useState<ReportsTo | null>(null);
+  const [companyAssignment, setCompanyAssignment] = useState<CompanyAssignment | null>(null);
   const [loading, setLoading]         = useState(true);
   const [saving, setSaving]           = useState(false);
   const [successMsg, setSuccessMsg]   = useState('');
@@ -112,6 +122,9 @@ export default function Profile() {
         const { data } = await api.get(`/employees/${user?.id}`);
         setProfile(data.profile);
         setReportsTo(data.reportsTo ?? null);
+        if (data.companyAssignments?.[0]) {
+          setCompanyAssignment(data.companyAssignments[0]);
+        }
         // Pre-fill form with existing data
         reset({
           gender:            (data.profile?.gender as any) || '',
@@ -249,6 +262,25 @@ export default function Profile() {
           />
         </CardContent>
       </Card>
+
+      {/* Company Assignment */}
+      {companyAssignment && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Building className="h-4 w-4" />
+              <CardTitle className="text-base">Company Assignment</CardTitle>
+            </div>
+            <CardDescription>Your current company assignment within the group</CardDescription>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <InfoRow label="Company" value={companyAssignment.company.displayName} />
+            <InfoRow label="Designation" value={companyAssignment.designation} />
+            <InfoRow label="Department" value={companyAssignment.department} />
+            <InfoRow label="Since" value={companyAssignment.effectiveFrom ? formatDate(companyAssignment.effectiveFrom) : undefined} />
+          </CardContent>
+        </Card>
+      )}
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
         {/* Editable contact info */}
@@ -469,6 +501,12 @@ export default function Profile() {
         </div>
       </form>
 
+      {/* Comp-Off Balance */}
+      <CompOffBalanceCard />
+
+      {/* Active Loans */}
+      <ActiveLoansCard />
+
       {/* Change Password */}
       <Card>
         <CardHeader>
@@ -534,5 +572,73 @@ export default function Profile() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+// ─── Comp-Off Balance Card ────────────────────────────────────────────────────
+
+function CompOffBalanceCard() {
+  const { data } = useQuery<{ balance: number }>({
+    queryKey: ['compoff-balance-profile'],
+    queryFn: () => api.get('/compoff/balance').then(r => r.data),
+  });
+  const balance = data?.balance ?? 0;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-2">
+          <CalendarPlus className="h-4 w-4" />
+          <CardTitle className="text-base">Comp-Off Balance</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-center gap-3">
+          <div className="text-2xl font-bold">{balance}</div>
+          <span className="text-sm text-muted-foreground">available comp-off day{balance !== 1 ? 's' : ''}</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Active Loans Card ────────────────────────────────────────────────────────
+
+function ActiveLoansCard() {
+  const { data: loans = [] } = useQuery<any[]>({
+    queryKey: ['loans-profile'],
+    queryFn: () => api.get('/loans').then(r => r.data),
+  });
+
+  const activeLoans = loans.filter((l: any) => l.status === 'ACTIVE' || l.status === 'APPROVED');
+  if (activeLoans.length === 0) return null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-2">
+          <Landmark className="h-4 w-4" />
+          <CardTitle className="text-base">Active Loans</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {activeLoans.map((loan: any) => (
+          <div key={loan.id} className="space-y-1">
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-medium">
+                {new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(loan.amount)}
+              </span>
+              <span className="text-muted-foreground">{loan.paidInstallments}/{loan.installments} EMIs paid</span>
+            </div>
+            <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+              <div className="h-full rounded-full bg-[#361963]" style={{ width: `${(loan.paidInstallments / loan.installments) * 100}%` }} />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              EMI: {new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(loan.monthlyEMI)}/month
+            </p>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 }

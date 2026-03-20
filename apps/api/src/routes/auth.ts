@@ -29,7 +29,8 @@ router.post('/login', async (req: Request, res: Response) => {
       return;
     }
 
-    const { email, password } = parsed.data;
+    const { email: rawEmail, password } = parsed.data;
+    const email = rawEmail.toLowerCase().trim();
 
     // Fetch user from DB (include profile for display name)
     const user = await prisma.user.findUnique({

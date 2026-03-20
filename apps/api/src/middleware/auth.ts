@@ -1,5 +1,5 @@
 /**
- * Athena V2 - Authentication & Authorization Middleware
+ * Athena V3.1 - Authentication & Authorization Middleware
  *
  * Two middleware functions:
  * 1. `authenticate` - verifies the JWT token and attaches user info to req
@@ -8,6 +8,8 @@
  * Usage:
  *   router.get('/admin-only', authenticate, authorize(['ADMIN']), handler)
  *   router.get('/manager-or-admin', authenticate, authorize(['ADMIN', 'MANAGER']), handler)
+ *
+ * OWNER role is a superuser — it passes through ALL authorization gates automatically.
  */
 
 import { Request, Response, NextFunction } from 'express';
@@ -18,7 +20,7 @@ export interface AuthRequest extends Request {
   user?: {
     id:    string;
     email: string;
-    role:  'ADMIN' | 'MANAGER' | 'EMPLOYEE';
+    role:  'OWNER' | 'ADMIN' | 'MANAGER' | 'EMPLOYEE';
   };
 }
 
@@ -26,7 +28,7 @@ export interface AuthRequest extends Request {
 interface JwtPayload {
   id:    string;
   email: string;
-  role:  'ADMIN' | 'MANAGER' | 'EMPLOYEE';
+  role:  'OWNER' | 'ADMIN' | 'MANAGER' | 'EMPLOYEE';
   iat?:  number;
   exp?:  number;
 }
@@ -65,12 +67,18 @@ export function authenticate(req: AuthRequest, res: Response, next: NextFunction
 /**
  * authorize - checks if the authenticated user's role is allowed
  * Must be used AFTER `authenticate`
+ * OWNER role always passes — it is a superuser that bypasses all role gates.
  */
-export function authorize(allowedRoles: ('ADMIN' | 'MANAGER' | 'EMPLOYEE')[]) {
+export function authorize(allowedRoles: ('OWNER' | 'ADMIN' | 'MANAGER' | 'EMPLOYEE')[]) {
   return (req: AuthRequest, res: Response, next: NextFunction): void => {
     if (!req.user) {
       res.status(401).json({ error: 'Unauthorized: Not authenticated' });
       return;
+    }
+
+    // OWNER is a superuser — always allowed through any gate
+    if (req.user.role === 'OWNER') {
+      return next();
     }
 
     if (!allowedRoles.includes(req.user.role)) {

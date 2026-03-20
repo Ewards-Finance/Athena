@@ -3,7 +3,7 @@
  * Lists all payroll runs and allows creating a new one.
  */
 
-import { useState }  from 'react';
+import { useEffect, useState }  from 'react';
 import { useNavigate }          from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -13,6 +13,12 @@ import api        from '@/lib/api';
 import { formatCurrency } from '@/lib/utils';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+interface CompanyOption {
+  id: string;
+  code: string;
+  displayName: string;
+}
+
 interface PayrollRun {
   id:           string;
   month:        number;
@@ -20,6 +26,8 @@ interface PayrollRun {
   status:       'DRAFT' | 'FINALIZED';
   processedBy:  string;
   createdAt:    string;
+  companyId?:   string | null;
+  company?:     { id: string; displayName: string } | null;
   _count:       { entries: number };
 }
 
@@ -33,12 +41,22 @@ export default function PayrollRuns() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
+  // Companies
+  const [companies, setCompanies] = useState<CompanyOption[]>([]);
+  useEffect(() => {
+    api.get('/companies').then(r => setCompanies(r.data)).catch(() => {});
+  }, []);
+
   // New run form
-  const [showForm, setShowForm]   = useState(false);
-  const [formMonth, setFormMonth] = useState(String(new Date().getMonth() + 1));
-  const [formYear, setFormYear]   = useState(String(new Date().getFullYear()));
-  const [creating, setCreating]   = useState(false);
+  const [showForm, setShowForm]       = useState(false);
+  const [formMonth, setFormMonth]     = useState(String(new Date().getMonth() + 1));
+  const [formYear, setFormYear]       = useState(String(new Date().getFullYear()));
+  const [formCompany, setFormCompany] = useState('');
+  const [creating, setCreating]       = useState(false);
   const [createError, setCreateError] = useState('');
+
+  // Company filter for the list
+  const [listCompanyFilter, setListCompanyFilter] = useState('');
 
   const { data: runs = [], isLoading: loading, isError } = useQuery({
     queryKey: ['payroll-runs'],
@@ -56,7 +74,7 @@ export default function PayrollRuns() {
 
     setCreating(true);
     try {
-      const res = await api.post('/payroll/runs', { month, year });
+      const res = await api.post('/payroll/runs', { month, year, ...(formCompany ? { companyId: formCompany } : {}) });
       setShowForm(false);
       navigate(`/payroll/runs/${res.data.id}`);
     } catch (err: any) {
@@ -155,6 +173,21 @@ export default function PayrollRuns() {
                   ))}
                 </select>
               </div>
+              {companies.length > 0 && (
+                <div className="space-y-1">
+                  <label className="text-sm font-medium text-gray-700">Company</label>
+                  <select
+                    value={formCompany}
+                    onChange={(e) => setFormCompany(e.target.value)}
+                    className="h-9 border rounded-md px-3 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#361963]/30"
+                  >
+                    <option value="">All Employees</option>
+                    {companies.map((c) => (
+                      <option key={c.id} value={c.id}>{c.displayName}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <Button
                 disabled={creating}
                 onClick={handleCreate}
@@ -172,6 +205,23 @@ export default function PayrollRuns() {
             </p>
           </CardContent>
         </Card>
+      )}
+
+      {/* Company Filter for List */}
+      {!loading && companies.length > 0 && runs.length > 0 && (
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">Filter:</span>
+          <select
+            value={listCompanyFilter}
+            onChange={(e) => setListCompanyFilter(e.target.value)}
+            className="h-9 border rounded-md px-3 text-sm bg-white"
+          >
+            <option value="">All Companies</option>
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>{c.displayName}</option>
+            ))}
+          </select>
+        </div>
       )}
 
       {/* Runs List */}
@@ -193,6 +243,7 @@ export default function PayrollRuns() {
               <thead>
                 <tr className="border-b bg-gray-50 text-left text-xs text-gray-500">
                   <th className="px-4 py-3 font-medium">Period</th>
+                  <th className="px-4 py-3 font-medium">Company</th>
                   <th className="px-4 py-3 font-medium">Status</th>
                   <th className="px-4 py-3 font-medium text-center">Employees</th>
                   <th className="px-4 py-3 font-medium">Generated On</th>
@@ -200,7 +251,7 @@ export default function PayrollRuns() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {runs.map((run) => (
+                {runs.filter(r => !listCompanyFilter || r.companyId === listCompanyFilter).map((run) => (
                   <tr
                     key={run.id}
                     className="hover:bg-gray-50 cursor-pointer"
@@ -208,6 +259,9 @@ export default function PayrollRuns() {
                   >
                     <td className="px-4 py-3 font-semibold" style={{ color: '#361963' }}>
                       {MONTHS[run.month]} {run.year}
+                    </td>
+                    <td className="px-4 py-3 text-xs">
+                      {run.company?.displayName || <span className="text-gray-400">All</span>}
                     </td>
                     <td className="px-4 py-3">
                       <Badge

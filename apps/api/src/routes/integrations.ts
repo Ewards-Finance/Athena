@@ -181,8 +181,8 @@ router.get('/payroll', requireScope('payroll:read'), async (req: Request, res: R
   }
 
   try {
-    const run = await prisma.payrollRun.findUnique({
-      where: { month_year: { month, year } },
+    const run = await prisma.payrollRun.findFirst({
+      where: { month, year },
       include: {
         entries: {
           select: {

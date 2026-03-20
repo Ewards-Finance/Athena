@@ -20,6 +20,7 @@ import { createAuditLog }           from '../lib/audit';
 import { getFYYear }                from '../lib/fyUtils';
 import { sendLeaveApprovedEmail, sendLeaveRejectedEmail } from '../lib/email';
 import { UNLIMITED_LEAVE_TYPES } from '../lib/payrollEngine';
+import { getBooleanRule } from '../lib/policyEngine';
 
 const router = Router();
 
@@ -82,6 +83,92 @@ async function calcBusinessDays(start: Date, end: Date): Promise<number> {
     cur.setDate(cur.getDate() + 1);
   }
   return count;
+}
+
+/**
+ * Sandwich Rule: If leave days are adjacent to weekends/holidays,
+ * those weekends/holidays get "sandwiched" and count as leave days.
+ *
+ * Example: Leave on Friday + Monday → Saturday & Sunday are sandwiched = 4 total days.
+ * Example: Leave on Thursday + Friday, Monday is holiday → Sat+Sun+Mon sandwiched = 6 total.
+ */
+async function checkSandwichRule(
+  start: Date,
+  end: Date,
+  leaveType: string,
+): Promise<{ sandwichDays: number; sandwichDates: string[]; warning: string }> {
+  const empty = { sandwichDays: 0, sandwichDates: [], warning: '' };
+
+  // Sandwich rule only applies to paid leave types, not unlimited ones
+  if ((UNLIMITED_LEAVE_TYPES as readonly string[]).includes(leaveType)) return empty;
+
+  const enabled = await getBooleanRule(null, 'sandwich_rule_enabled', true);
+  if (!enabled) return empty;
+
+  // Fetch holidays in an extended window (7 days before start to 7 days after end)
+  const windowStart = new Date(start);
+  windowStart.setDate(windowStart.getDate() - 7);
+  const windowEnd = new Date(end);
+  windowEnd.setDate(windowEnd.getDate() + 7);
+
+  const holidays = await prisma.holiday.findMany({
+    where: { date: { gte: windowStart, lte: windowEnd } },
+    select: { date: true },
+  });
+  const holidaySet = new Set(holidays.map(h => h.date.toISOString().split('T')[0]));
+
+  const isNonWorking = (d: Date): boolean => {
+    const dow = d.getDay();
+    const ds = d.toISOString().split('T')[0];
+    return dow === 0 || dow === 6 || holidaySet.has(ds);
+  };
+
+  // Walk backwards from start to find contiguous non-working days before
+  const sandwichDates: string[] = [];
+  const beforeDates: Date[] = [];
+  const cur1 = new Date(start);
+  cur1.setDate(cur1.getDate() - 1);
+  while (isNonWorking(cur1)) {
+    beforeDates.push(new Date(cur1));
+    cur1.setDate(cur1.getDate() - 1);
+  }
+
+  // Walk forwards from end to find contiguous non-working days after
+  const afterDates: Date[] = [];
+  const cur2 = new Date(end);
+  cur2.setDate(cur2.getDate() + 1);
+  while (isNonWorking(cur2)) {
+    afterDates.push(new Date(cur2));
+    cur2.setDate(cur2.getDate() + 1);
+  }
+
+  // Also find non-working gaps WITHIN the leave range
+  const withinDates: Date[] = [];
+  const cur3 = new Date(start);
+  cur3.setDate(cur3.getDate() + 1);
+  while (cur3 < end) {
+    if (isNonWorking(cur3)) withinDates.push(new Date(cur3));
+    cur3.setDate(cur3.getDate() + 1);
+  }
+
+  // Sandwich logic: non-working days between two leave/working periods are sandwiched
+  // Before: only if there's a leave day on the other side (start)
+  // After: only if there's a leave day on the other side (end)
+  // Within: always sandwiched
+  for (const d of beforeDates) sandwichDates.push(d.toISOString().split('T')[0]);
+  for (const d of afterDates) sandwichDates.push(d.toISOString().split('T')[0]);
+  for (const d of withinDates) sandwichDates.push(d.toISOString().split('T')[0]);
+
+  sandwichDates.sort();
+  const count = sandwichDates.length;
+
+  if (count === 0) return empty;
+
+  return {
+    sandwichDays: count,
+    sandwichDates,
+    warning: `Sandwich rule applies: ${count} non-working day(s) (${sandwichDates.join(', ')}) will also be counted as leave.`,
+  };
 }
 
 // GET /api/leaves - Scoped by role:
@@ -165,6 +252,53 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER']), async (req: AuthRequest, re
   }
 
   try {
+    // ── Sandwich rule check ───────────────────────────────────────────────
+    const sandwich = await checkSandwichRule(start, end, leaveType);
+    if (sandwich.sandwichDays > 0) {
+      totalDays += sandwich.sandwichDays;
+    }
+
+    // ── Document requirement check ────────────────────────────────────────
+    let documentWarning = '';
+    const policy = await prisma.leavePolicy.findUnique({ where: { leaveType } });
+    if (policy?.documentRequired && totalDays > (policy.documentAfterDays ?? 0)) {
+      documentWarning = `Medical document required for ${leaveType} exceeding ${policy.documentAfterDays ?? 0} day(s).`;
+    }
+
+    // ── LWP cascade warning ───────────────────────────────────────────────
+    let lwpWarning = '';
+    let lwpDays = 0;
+    const isUnlimited = (UNLIMITED_LEAVE_TYPES as readonly string[]).includes(leaveType);
+    if (!isUnlimited) {
+      const year = getFYYear(new Date(start));
+      await getOrCreateBalances(req.user!.id, year);
+      const balance = await prisma.leaveBalance.findFirst({
+        where: { userId: req.user!.id, year, leaveType },
+      });
+      if (balance) {
+        const remaining = Math.max(balance.total - balance.used, 0);
+        if (totalDays > remaining) {
+          lwpDays = totalDays - remaining;
+          lwpWarning = `Insufficient ${leaveType} balance. ${lwpDays} day(s) will be marked as Loss of Pay (LWP).`;
+        }
+      }
+    }
+
+    // ── Preview mode — return warnings without creating leave ─────────────
+    if (req.query.preview === 'true') {
+      res.json({
+        preview: true,
+        totalDays,
+        sandwichDays: sandwich.sandwichDays,
+        sandwichDates: sandwich.sandwichDates,
+        sandwichWarning: sandwich.warning,
+        documentWarning,
+        lwpDays,
+        lwpWarning,
+      });
+      return;
+    }
+
     // ── Overlap detection ─────────────────────────────────────────────────
     const force = req.query.force === 'true';
     if (!force) {
@@ -228,7 +362,14 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER']), async (req: AuthRequest, re
       });
     }
 
-    res.status(201).json(leave);
+    res.status(201).json({
+      ...leave,
+      sandwichDays: sandwich.sandwichDays,
+      sandwichWarning: sandwich.warning,
+      documentWarning,
+      lwpDays,
+      lwpWarning,
+    });
   } catch (err) {
     console.error('Apply leave error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -280,6 +421,22 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
     // Ensure balance row exists (for non-unlimited types), then approve
     if (!isUnlimited) await getOrCreateBalances(leave.employeeId, year);
 
+    // ── LWP cascade: deduct only up to available balance ─────────────────
+    let lwpDays = 0;
+    let deductDays = leave.totalDays;
+    if (!isUnlimited) {
+      const balance = await prisma.leaveBalance.findFirst({
+        where: { userId: leave.employeeId, year, leaveType: leave.leaveType },
+      });
+      if (balance) {
+        const remaining = Math.max(balance.total - balance.used, 0);
+        if (leave.totalDays > remaining) {
+          lwpDays = leave.totalDays - remaining;
+          deductDays = remaining; // only deduct what's available
+        }
+      }
+    }
+
     const approveOps: any[] = [
       prisma.leaveRequest.update({
         where: { id },
@@ -292,15 +449,47 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
       }),
     ];
     // Only deduct balance for types that have a balance (not TEMPORARY_WFH / TRAVELLING)
-    if (!isUnlimited) {
+    if (!isUnlimited && deductDays > 0) {
       approveOps.push(
         prisma.leaveBalance.updateMany({
           where: { userId: leave.employeeId, year, leaveType: leave.leaveType },
-          data:  { used: { increment: leave.totalDays } },
+          data:  { used: { increment: deductDays } },
         })
       );
     }
     const [updated] = await prisma.$transaction(approveOps);
+
+    // ── Auto-create TravelProof records for TRAVELLING leaves ─────────────
+    if (leave.leaveType === 'TRAVELLING') {
+      const proofRecords: any[] = [];
+      const cur = new Date(leave.startDate);
+      const endDate = new Date(leave.endDate);
+      while (cur <= endDate) {
+        const dow = cur.getDay();
+        if (dow !== 0 && dow !== 6) { // business days only
+          proofRecords.push({
+            leaveRequestId: leave.id,
+            userId:         leave.employeeId,
+            proofDate:      new Date(cur),
+          });
+        }
+        cur.setDate(cur.getDate() + 1);
+      }
+      if (proofRecords.length > 0) {
+        await prisma.travelProof.createMany({ data: proofRecords, skipDuplicates: true });
+      }
+    }
+
+    // ── Notify about LWP cascade ──────────────────────────────────────────
+    if (lwpDays > 0) {
+      await createNotification({
+        userId:  leave.employeeId,
+        type:    'LWP_CASCADE',
+        title:   'Leave Balance Exhausted',
+        message: `${lwpDays} day(s) of your ${leave.leaveType} leave will be marked as Loss of Pay (LWP) due to insufficient balance.`,
+        link:    '/leaves',
+      });
+    }
 
     // Audit log
     await createAuditLog({

@@ -205,11 +205,19 @@ router.put('/employees-ctc/:userId', authorize(['ADMIN']), async (req: AuthReque
 // ─── Payroll Runs ─────────────────────────────────────────────────────────────
 
 // GET /api/payroll/runs
-router.get('/runs', authorize(['ADMIN']), async (_req: AuthRequest, res: Response) => {
+router.get('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
+    const { companyId } = req.query;
+    const where: any = {};
+    if (companyId) where.companyId = companyId;
+
     const runs = await prisma.payrollRun.findMany({
+      where,
       orderBy: [{ year: 'desc' }, { month: 'desc' }],
-      include: { _count: { select: { entries: true } } },
+      include: {
+        _count: { select: { entries: true } },
+        company: { select: { id: true, code: true, displayName: true } },
+      },
     });
     res.json(runs);
   } catch (err) {
@@ -221,22 +229,42 @@ router.get('/runs', authorize(['ADMIN']), async (_req: AuthRequest, res: Respons
 // POST /api/payroll/runs — create a DRAFT payroll run for a given month/year
 router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
   const parsed = z.object({
-    month: z.number().int().min(1).max(12),
-    year:  z.number().int().min(2020).max(2100),
+    month:     z.number().int().min(1).max(12),
+    year:      z.number().int().min(2020).max(2100),
+    companyId: z.string().optional(),
   }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
     return;
   }
 
-  const { month, year } = parsed.data;
+  const { month, year, companyId } = parsed.data;
 
   try {
-    // Check for duplicate run
-    const existing = await prisma.payrollRun.findUnique({ where: { month_year: { month, year } } });
+    // Check for duplicate run (now scoped by companyId)
+    const existing = await prisma.payrollRun.findFirst({
+      where: { month, year, companyId: companyId ?? null },
+    });
     if (existing) {
-      res.status(409).json({ error: `Payroll run for ${month}/${year} already exists (${existing.status})` });
+      res.status(409).json({ error: `Payroll run for ${month}/${year}${companyId ? ' (this company)' : ''} already exists (${existing.status})` });
       return;
+    }
+
+    // Load active policy version (company-specific first, then global)
+    const activePolicyVersion = await prisma.policyVersion.findFirst({
+      where: companyId
+        ? { isActive: true, scope: 'COMPANY_SPECIFIC', companyId }
+        : { isActive: true, scope: 'GLOBAL' },
+    }) ?? await prisma.policyVersion.findFirst({ where: { isActive: true, scope: 'GLOBAL' } });
+
+    // Load company data if companyId provided
+    let companyData: any = null;
+    if (companyId) {
+      companyData = await prisma.company.findUnique({ where: { id: companyId } });
+      if (!companyData) {
+        res.status(404).json({ error: 'Company not found' });
+        return;
+      }
     }
 
     // Fetch components
@@ -258,18 +286,53 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
     const holidayDates = holidays.map((h) => new Date(h.date));
     const workingDays  = countWorkingDays(year, month, holidayDates);
 
-    // Fetch all active employees with CTC
-    const employees = await prisma.profile.findMany({
-      where: { user: { isActive: true }, annualCtc: { gt: 0 } },
-      select: {
-        userId:         true,
-        annualCtc:      true,
-        firstName:      true,
-        lastName:       true,
-        employmentType: true,
-        employeeId:     true,
-      },
-    });
+    // Fetch active employees — if companyId given, only employees assigned to that company
+    let employees: { userId: string; annualCtc: number; firstName: string; lastName: string; employmentType: string; employeeId: string }[];
+
+    if (companyId) {
+      // Get employees from active assignments for this company
+      const assignments = await prisma.employeeCompanyAssignment.findMany({
+        where: { companyId, status: 'ACTIVE' },
+        select: {
+          userId: true,
+          annualCTC: true,
+          employeeCode: true,
+          designation: true,
+          user: {
+            select: {
+              isActive: true,
+              profile: {
+                select: {
+                  userId: true, annualCtc: true, firstName: true, lastName: true,
+                  employmentType: true, employeeId: true,
+                },
+              },
+            },
+          },
+        },
+      });
+      employees = assignments
+        .filter(a => a.user.isActive && a.user.profile)
+        .map(a => ({
+          userId: a.userId,
+          annualCtc: a.annualCTC ?? a.user.profile!.annualCtc,
+          firstName: a.user.profile!.firstName,
+          lastName: a.user.profile!.lastName,
+          employmentType: a.user.profile!.employmentType,
+          employeeId: a.user.profile!.employeeId,
+        }))
+        .filter(e => e.annualCtc > 0);
+    } else {
+      // Legacy: all active employees
+      const profiles = await prisma.profile.findMany({
+        where: { user: { isActive: true }, annualCtc: { gt: 0 } },
+        select: {
+          userId: true, annualCtc: true, firstName: true, lastName: true,
+          employmentType: true, employeeId: true,
+        },
+      });
+      employees = profiles;
+    }
 
     if (employees.length === 0) {
       res.status(400).json({ error: 'No active employees with Annual CTC set. Please configure CTC in Payroll Settings first.' });
@@ -468,13 +531,49 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
       order:    c.order,
     }));
 
+    // Load policy rules for this run (company-specific overlay applied inside loadPolicyRulesMap)
+    const { loadPolicyRulesMap, numericRuleFromMap } = await import('../lib/policyEngine');
+    const policyMap = activePolicyVersion
+      ? await loadPolicyRulesMap(activePolicyVersion.id, companyId ?? undefined)
+      : new Map<string, string>();
+    const wfhDeductionRate     = numericRuleFromMap(policyMap, 'wfh_deduction_pct') / 100;
+    const tdsStandardDeduction = numericRuleFromMap(policyMap, 'tds_standard_deduction');
+    const tdsRebateLimit       = numericRuleFromMap(policyMap, 'tds_87a_rebate_limit');
+
+    // Build company snapshot for payslip entries
+    const companySnapshot = companyData ? {
+      companyLegalName: companyData.legalName,
+      companyAddress: [companyData.addressLine1, companyData.addressLine2, companyData.city, companyData.state, companyData.pincode].filter(Boolean).join(', ') || null,
+      companyPan: companyData.pan,
+    } : {};
+
     // Create the run + all payslip entries in a transaction
+    // ── Loan EMI: fetch active loans for payroll deduction ──────────────
+    const activeLoans = await prisma.loanRequest.findMany({
+      where: {
+        status: { in: ['APPROVED', 'ACTIVE'] },
+        userId: { in: employees.map(e => e.userId) },
+      },
+    });
+    const loanEmiByUser: Record<string, number> = {};
+    for (const loan of activeLoans) {
+      // Only deduct if EMI schedule has started (startMonth/startYear set)
+      if (!loan.startMonth || !loan.startYear) continue;
+      const emiStartDate = new Date(loan.startYear, loan.startMonth - 1, 1);
+      const runDate      = new Date(year, month - 1, 1);
+      if (runDate >= emiStartDate && loan.paidInstallments < loan.installments) {
+        loanEmiByUser[loan.userId] = r2((loanEmiByUser[loan.userId] ?? 0) + loan.monthlyEMI);
+      }
+    }
+
     const run = await prisma.payrollRun.create({
       data: {
         month,
         year,
-        status:      'DRAFT',
-        processedBy: req.user!.id,
+        status:          'DRAFT',
+        processedBy:     req.user!.id,
+        companyId:       companyId ?? null,
+        policyVersionId: activePolicyVersion?.id ?? null,
         entries: {
           create: employees.map((emp) => {
             const annualCtc      = emp.annualCtc ?? 0;
@@ -486,7 +585,18 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
             const wfhDays  = Math.min(wfhByUser[emp.userId] ?? 0, workingDays);
             const computed = computePayslipEntry({
               monthlyCtc, annualCtc, workingDays, lwpDays, wfhDays, components: compSnaps, reimbursements,
+              wfhDeductionRate, tdsStandardDeduction, tdsRebateLimit,
             });
+
+            // Inject loan EMI as additional deduction
+            const loanEmi = loanEmiByUser[emp.userId] ?? 0;
+            if (loanEmi > 0) {
+              const deductions = computed.deductions as any;
+              deductions['Loan EMI'] = loanEmi;
+              computed.totalDeductions = r2(computed.totalDeductions + loanEmi);
+              computed.netPay = r2(computed.netPay - loanEmi);
+            }
+
             return {
               userId:         emp.userId,
               monthlyCtc:     computed.monthlyCtc,
@@ -499,6 +609,8 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
               grossPay:       computed.grossPay,
               totalDeductions:computed.totalDeductions,
               netPay:         computed.netPay,
+              ...companySnapshot,
+              employeeCode:        emp.employeeId,
             };
           }),
         },
@@ -639,10 +751,45 @@ router.post('/runs/:id/finalize', authorize(['ADMIN']), async (req: AuthRequest,
     if (!run)                    { res.status(404).json({ error: 'Run not found' }); return; }
     if (run.status === 'FINALIZED') { res.status(400).json({ error: 'Run is already finalized' }); return; }
 
-    const updated = await prisma.payrollRun.update({
-      where: { id: req.params.id },
-      data:  { status: 'FINALIZED' },
+    // ── Finalize run + update loan installments atomically ──────────
+    const entries = await prisma.payslipEntry.findMany({
+      where: { payrollRunId: run.id },
+      select: { userId: true, deductions: true },
     });
+
+    // Collect userIds that had loan EMI deducted
+    const loanUserIds = entries
+      .filter(e => {
+        const d = e.deductions as any;
+        return d?.['Loan EMI'] && d['Loan EMI'] > 0;
+      })
+      .map(e => e.userId);
+
+    // Batch-fetch all relevant loans
+    const loansToUpdate = loanUserIds.length > 0
+      ? await prisma.loanRequest.findMany({
+          where: { userId: { in: loanUserIds }, status: { in: ['APPROVED', 'ACTIVE'] } },
+        })
+      : [];
+
+    // Build all operations for atomic transaction
+    const txOps: any[] = [
+      prisma.payrollRun.update({
+        where: { id: req.params.id },
+        data:  { status: 'FINALIZED' },
+      }),
+    ];
+    for (const loan of loansToUpdate) {
+      const newPaid = loan.paidInstallments + 1;
+      const newStatus = newPaid >= loan.installments ? 'CLOSED' : 'ACTIVE';
+      txOps.push(
+        prisma.loanRequest.update({
+          where: { id: loan.id },
+          data: { paidInstallments: newPaid, status: newStatus as any },
+        })
+      );
+    }
+    const [updated] = await prisma.$transaction(txOps);
 
     // Send payslip ready emails (fire and forget — never block the response)
     prisma.payslipEntry.findMany({

@@ -18,7 +18,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, Upload, Trash2, Plus, AlertCircle, Pencil, Check, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { Loader2, Upload, Trash2, Plus, AlertCircle, Pencil, Check, X, ChevronDown, ChevronUp, MapPin } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -106,10 +107,10 @@ function fmtDate(iso: string): string {
 
 export default function Attendance() {
   const { user } = useAuth();
-  const isAdmin  = user?.role === 'ADMIN';
+  const isAdmin  = user?.role === 'ADMIN' || user?.role === 'OWNER';
 
   const now = new Date();
-  const [tab, setTab]     = useState<'records' | 'import' | 'mapping' | 'mine'>(
+  const [tab, setTab]     = useState<'records' | 'import' | 'mapping' | 'mine' | 'exceptions'>(
     isAdmin ? 'records' : 'mine'
   );
   const [month, setMonth] = useState(now.getMonth() + 1);
@@ -152,6 +153,19 @@ export default function Attendance() {
   const [adjustmentReasons, setAdjReasons]    = useState<Record<string, string>>({});
   const [savingAdj, setSavingAdj]             = useState<Record<string, boolean>>({});
   const [adjSaved, setAdjSaved]               = useState<Record<string, boolean>>({});
+
+  // Exception inbox
+  const [exceptions, setExceptions]           = useState<any>(null);
+  const [exceptionsLoading, setExceptionsLoading] = useState(false);
+
+  const fetchExceptions = async () => {
+    setExceptionsLoading(true);
+    try {
+      const res = await api.get(`/attendance/exceptions?month=${month}&year=${year}`);
+      setExceptions(res.data);
+    } catch { setExceptions(null); }
+    finally { setExceptionsLoading(false); }
+  };
 
   const fetchSummary = async () => {
     setSummaryLoading(true);
@@ -440,12 +454,14 @@ export default function Attendance() {
     if (tab === 'mine')               fetchMyRecords();
     if (tab === 'import' && isAdmin)  fetchImports();
     if (tab === 'mapping' && isAdmin) fetchMappings();
+    if (tab === 'exceptions' && isAdmin) fetchExceptions();
   }, [tab]);
 
-  // Re-fetch when month/year changes on records/mine tabs
+  // Re-fetch when month/year changes on records/mine/exceptions tabs
   useEffect(() => {
     if (tab === 'records' && isAdmin) fetchSummary();
     if (tab === 'mine')               fetchMyRecords();
+    if (tab === 'exceptions' && isAdmin) fetchExceptions();
   }, [month, year]);
 
   const yearOptions = Array.from({ length: 5 }, (_, i) => now.getFullYear() - 1 + i);
@@ -467,7 +483,7 @@ export default function Attendance() {
       <div className="flex gap-1 border-b">
         {isAdmin && (
           <>
-            {(['records', 'import', 'mapping'] as const).map((t) => (
+            {(['records', 'import', 'mapping', 'exceptions'] as const).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -477,7 +493,7 @@ export default function Attendance() {
                     : 'border-transparent text-gray-500 hover:text-gray-700'
                 }`}
               >
-                {t === 'records' ? 'Records' : t === 'import' ? 'Import' : 'EnNo Mapping'}
+                {t === 'records' ? 'Records' : t === 'import' ? 'Import' : t === 'mapping' ? 'EnNo Mapping' : 'Exception Inbox'}
               </button>
             ))}
           </>
@@ -1415,6 +1431,163 @@ export default function Attendance() {
         </div>
       )}
 
+      {/* ══════════════════════════════════════════════════════════════════════
+          Tab: Exception Inbox (Admin)
+      ══════════════════════════════════════════════════════════════════════ */}
+      {tab === 'exceptions' && isAdmin && (
+        <div className="space-y-4">
+          {/* Month/Year selector */}
+          <div className="flex items-center gap-3">
+            <select value={month} onChange={(e) => setMonth(Number(e.target.value))} className="border rounded-md px-3 py-2 text-sm">
+              {MONTHS.slice(1).map((m, i) => <option key={i+1} value={i+1}>{m}</option>)}
+            </select>
+            <select value={year} onChange={(e) => setYear(Number(e.target.value))} className="border rounded-md px-3 py-2 text-sm">
+              {Array.from({ length: 5 }, (_, i) => now.getFullYear() - 1 + i).map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <Button size="sm" variant="outline" onClick={fetchExceptions}>Refresh</Button>
+          </div>
+
+          {exceptionsLoading ? (
+            <div className="flex items-center gap-2 text-gray-500"><Loader2 className="h-5 w-5 animate-spin" /> Loading exceptions...</div>
+          ) : !exceptions ? (
+            <p className="text-muted-foreground">No data. Select a month and click Refresh.</p>
+          ) : (
+            <div className="space-y-4">
+              {/* Missing Punch */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 text-orange-500" />
+                    Missing Punch <Badge variant="outline" className="ml-1">{exceptions.missingPunch?.length || 0}</Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {exceptions.missingPunch?.length === 0 ? (
+                    <p className="text-sm text-gray-500">No missing punches found.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead><tr className="text-left text-gray-500 border-b">
+                          <th className="py-2 pr-4">Employee</th><th className="py-2 pr-4">Date</th><th className="py-2">Check In</th>
+                        </tr></thead>
+                        <tbody>
+                          {exceptions.missingPunch?.map((r: any, i: number) => (
+                            <tr key={i} className="border-b last:border-0">
+                              <td className="py-2 pr-4">{r.profile?.firstName} {r.profile?.lastName} ({r.profile?.employeeId})</td>
+                              <td className="py-2 pr-4">{fmtDate(r.date)}</td>
+                              <td className="py-2">{fmtTime(r.checkIn)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Late Marks */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 text-red-500" />
+                    Excessive Late Marks <Badge variant="outline" className="ml-1">{exceptions.lateMark?.length || 0}</Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {exceptions.lateMark?.length === 0 ? (
+                    <p className="text-sm text-gray-500">No employees with late marks.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead><tr className="text-left text-gray-500 border-b">
+                          <th className="py-2 pr-4">Employee</th><th className="py-2 pr-4">Late Count</th><th className="py-2">Dates</th>
+                        </tr></thead>
+                        <tbody>
+                          {exceptions.lateMark?.map((r: any, i: number) => (
+                            <tr key={i} className="border-b last:border-0">
+                              <td className="py-2 pr-4">{r.profile?.firstName} {r.profile?.lastName}</td>
+                              <td className="py-2 pr-4"><Badge className="bg-red-100 text-red-700">{r.count}</Badge></td>
+                              <td className="py-2 text-xs text-gray-500">{r.dates?.map((d: string) => fmtDate(d)).join(', ')}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Half-Day Mismatch */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 text-yellow-500" />
+                    Half-Day Mismatches <Badge variant="outline" className="ml-1">{exceptions.halfDayMismatch?.length || 0}</Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {exceptions.halfDayMismatch?.length === 0 ? (
+                    <p className="text-sm text-gray-500">No mismatches found.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead><tr className="text-left text-gray-500 border-b">
+                          <th className="py-2 pr-4">Employee</th><th className="py-2 pr-4">Date</th><th className="py-2 pr-4">Leave Type</th><th className="py-2">Hours Worked</th>
+                        </tr></thead>
+                        <tbody>
+                          {exceptions.halfDayMismatch?.map((r: any, i: number) => (
+                            <tr key={i} className="border-b last:border-0">
+                              <td className="py-2 pr-4">{r.profile?.firstName} {r.profile?.lastName}</td>
+                              <td className="py-2 pr-4">{fmtDate(r.date)}</td>
+                              <td className="py-2 pr-4"><Badge className="bg-yellow-100 text-yellow-700">{r.leaveType}</Badge></td>
+                              <td className="py-2">{r.hoursWorked?.toFixed(1)}h</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Unmapped Employees */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 text-gray-500" />
+                    No Attendance Records <Badge variant="outline" className="ml-1">{exceptions.unmappedEmployees?.length || 0}</Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {exceptions.unmappedEmployees?.length === 0 ? (
+                    <p className="text-sm text-gray-500">All mapped employees have attendance records.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead><tr className="text-left text-gray-500 border-b">
+                          <th className="py-2 pr-4">Employee</th><th className="py-2">EnNo</th>
+                        </tr></thead>
+                        <tbody>
+                          {exceptions.unmappedEmployees?.map((r: any, i: number) => (
+                            <tr key={i} className="border-b last:border-0">
+                              <td className="py-2 pr-4">{r.profile?.firstName} {r.profile?.lastName} ({r.profile?.employeeId})</td>
+                              <td className="py-2">{r.enNo}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Pending Geo Proofs */}
+              <PendingGeoProofs />
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Absence Auto-Mark Modal ── */}
       {showAbsenceModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -1484,5 +1657,59 @@ export default function Attendance() {
         </div>
       )}
     </div>
+  );
+}
+
+// ─── Pending Geo Proofs Card ─────────────────────────────────────────────────
+
+function PendingGeoProofs() {
+  const { data: proofs = [], isLoading } = useQuery<any[]>({
+    queryKey: ['travel-proof-pending'],
+    queryFn: () => api.get('/travel-proof/pending').then(r => r.data),
+  });
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <MapPin className="h-4 w-4 text-amber-500" />
+          Pending Geo Proofs <Badge variant="outline" className="ml-1">{proofs.length}</Badge>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 className="h-4 w-4 animate-spin" /> Loading...</div>
+        ) : proofs.length === 0 ? (
+          <p className="text-sm text-gray-500">No pending travel proofs.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-gray-500 border-b">
+                <th className="py-2 pr-4">Employee</th>
+                <th className="py-2 pr-4">Travel Date</th>
+                <th className="py-2">Status</th>
+              </tr></thead>
+              <tbody>
+                {proofs.map((p: any) => (
+                  <tr key={p.id} className="border-b last:border-0">
+                    <td className="py-2 pr-4">{p.user?.profile?.firstName} {p.user?.profile?.lastName}</td>
+                    <td className="py-2 pr-4">{new Date(p.proofDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                    <td className="py-2">
+                      {p.submittedAt ? (
+                        <a href={p.mapsLink} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline text-xs">
+                          View on Maps
+                        </a>
+                      ) : (
+                        <Badge variant="outline" className="text-amber-600 border-amber-300">No Proof</Badge>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

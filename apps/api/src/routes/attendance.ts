@@ -528,10 +528,10 @@ router.post('/imports/:id/apply-late-policy', authorize(['ADMIN']), async (req: 
     );
 
     // Block if payroll is already finalized for this month
-    const payrollRun = await prisma.payrollRun.findUnique({
-      where: { month_year: { month: importBatch.month, year: importBatch.year } },
+    const payrollRun = await prisma.payrollRun.findFirst({
+      where: { month: importBatch.month, year: importBatch.year, status: 'FINALIZED' },
     });
-    if (payrollRun?.status === 'FINALIZED') {
+    if (payrollRun) {
       res.status(400).json({ error: 'Cannot modify late policy — payroll for this month is already finalized.' });
       return;
     }
@@ -653,10 +653,10 @@ router.put('/records/:id', authorize(['ADMIN']), async (req: AuthRequest, res: R
     });
     if (!record) { res.status(404).json({ error: 'Record not found' }); return; }
 
-    const payrollRun = await prisma.payrollRun.findUnique({
-      where: { month_year: { month: record.import.month, year: record.import.year } },
+    const payrollRun = await prisma.payrollRun.findFirst({
+      where: { month: record.import.month, year: record.import.year, status: 'FINALIZED' },
     });
-    if (payrollRun?.status === 'FINALIZED') {
+    if (payrollRun) {
       res.status(400).json({ error: 'Cannot modify attendance — payroll for this month is already finalized.' });
       return;
     }
@@ -926,6 +926,321 @@ router.get('/absences', authorize(['ADMIN']), async (req: AuthRequest, res: Resp
     res.json(absences);
   } catch (err) {
     console.error('Get absences error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ─── Exception Inbox ─────────────────────────────────────────────────────────
+
+// GET /api/attendance/exceptions?month=&year= — grouped anomalies
+router.get('/exceptions', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  const parsed = z.object({
+    month: z.coerce.number().int().min(1).max(12),
+    year:  z.coerce.number().int().min(2020).max(2100),
+  }).safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Valid month and year required' });
+    return;
+  }
+  const { month, year } = parsed.data;
+  const startOfMonth = new Date(Date.UTC(year, month - 1, 1));
+  const endOfMonth   = new Date(Date.UTC(year, month, 0, 23, 59, 59));
+
+  try {
+    const records = await prisma.attendanceRecord.findMany({
+      where: { date: { gte: startOfMonth, lte: endOfMonth } },
+      include: {
+        user: {
+          select: {
+            profile: { select: { firstName: true, lastName: true, employeeId: true, department: true } },
+          },
+        },
+      },
+    });
+
+    // 1. Missing punch: checkIn exists but no checkOut
+    const missingPunch = records
+      .filter(r => r.checkIn && !r.checkOut)
+      .map(r => ({
+        id: r.id, userId: r.userId, date: r.date,
+        checkIn: r.checkIn, profile: r.user?.profile,
+      }));
+
+    // 2. Late marks: group by user, count lates
+    const lateByUser = new Map<string, { profile: any; count: number; dates: Date[] }>();
+    for (const r of records) {
+      if (r.isLate) {
+        if (!lateByUser.has(r.userId)) {
+          lateByUser.set(r.userId, { profile: r.user?.profile, count: 0, dates: [] });
+        }
+        const entry = lateByUser.get(r.userId)!;
+        entry.count++;
+        entry.dates.push(r.date);
+      }
+    }
+    const lateMark = Array.from(lateByUser.entries()).map(([userId, data]) => ({
+      userId, ...data,
+    }));
+
+    // 3. Half-day mismatch: approved half-day leaves but full-day attendance (>6h)
+    const halfDayLeaves = await prisma.leaveRequest.findMany({
+      where: {
+        status: 'APPROVED',
+        startDate: { lte: endOfMonth },
+        endDate: { gte: startOfMonth },
+        singleDayType: { in: ['FIRST_HALF', 'SECOND_HALF'] },
+      },
+      select: { employeeId: true, startDate: true, singleDayType: true },
+    });
+    const halfDayMismatch: any[] = [];
+    for (const leave of halfDayLeaves) {
+      const dateStr = leave.startDate.toISOString().slice(0, 10);
+      const matchingRecord = records.find(
+        r => r.userId === leave.employeeId && r.date.toISOString().slice(0, 10) === dateStr
+      );
+      if (matchingRecord && matchingRecord.hoursWorked && matchingRecord.hoursWorked > 6) {
+        halfDayMismatch.push({
+          userId: leave.employeeId, date: leave.startDate,
+          leaveType: leave.singleDayType, hoursWorked: matchingRecord.hoursWorked,
+          profile: matchingRecord.user?.profile,
+        });
+      }
+    }
+
+    // 4. Unmapped employees: active users with punch mapping but no record this month
+    const allMappings = await prisma.punchMapping.findMany({ select: { userId: true, enNo: true } });
+    const usersWithRecords = new Set(records.map(r => r.userId));
+    const unmappedEmployees = [];
+    for (const mapping of allMappings) {
+      if (!usersWithRecords.has(mapping.userId)) {
+        const user = await prisma.user.findUnique({
+          where: { id: mapping.userId },
+          select: { isActive: true, profile: { select: { firstName: true, lastName: true, employeeId: true } } },
+        });
+        if (user?.isActive) {
+          unmappedEmployees.push({ userId: mapping.userId, enNo: mapping.enNo, profile: user.profile });
+        }
+      }
+    }
+
+    res.json({ missingPunch, lateMark, halfDayMismatch, unmappedEmployees });
+  } catch (err) {
+    console.error('Exceptions error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ─── Import Preview / Commit / Rollback ──────────────────────────────────────
+
+// POST /api/attendance/import/preview — parse file without committing
+router.post('/import/preview', authorize(['ADMIN']), (req: AuthRequest, res: Response) => {
+  txtUpload(req as any, res as any, async (err) => {
+    if (err) { res.status(400).json({ error: err.message || 'File upload failed' }); return; }
+    if (!req.file) { res.status(400).json({ error: 'No file uploaded' }); return; }
+
+    const fileName = req.file.originalname;
+    const content  = req.file.buffer.toString('utf-8');
+
+    try {
+      const groups = parseUdiskLog(content);
+      if (groups.size === 0) {
+        res.status(400).json({ error: 'No valid punch records found in the file.' });
+        return;
+      }
+
+      let earliestDate: Date | null = null;
+      for (const { punches } of groups.values()) {
+        for (const p of punches) {
+          if (!earliestDate || p < earliestDate) earliestDate = p;
+        }
+      }
+      const month = earliestDate!.getMonth() + 1;
+      const year  = earliestDate!.getFullYear();
+
+      // Check if already imported
+      const existing = await prisma.attendanceImport.findUnique({
+        where: { month_year: { month, year } },
+      });
+      const MONTH_NAMES = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      if (existing) {
+        res.status(409).json({
+          error: `Attendance for ${MONTH_NAMES[month]} ${year} already exists. Delete existing import first.`,
+        });
+        return;
+      }
+
+      // Load mappings
+      const allMappings = await prisma.punchMapping.findMany({ select: { enNo: true, userId: true } });
+      const enNoToUser  = new Map(allMappings.map(m => [m.enNo, m.userId]));
+
+      const parsedRecords: any[] = [];
+      const unmappedSet = new Set<number>();
+
+      for (const { enNo, punches } of groups.values()) {
+        const userId = enNoToUser.get(enNo);
+        if (!userId) { unmappedSet.add(enNo); continue; }
+
+        punches.sort((a, b) => a.getTime() - b.getTime());
+        const checkIn  = punches[0];
+        const checkOut = punches.length > 1 ? punches[punches.length - 1] : undefined;
+        const hoursWorked = checkOut
+          ? Math.round(((checkOut.getTime() - checkIn.getTime()) / 3_600_000) * 100) / 100
+          : undefined;
+        const date = new Date(Date.UTC(checkIn.getFullYear(), checkIn.getMonth(), checkIn.getDate()));
+
+        parsedRecords.push({ userId, date: date.toISOString(), checkIn: checkIn.toISOString(), checkOut: checkOut?.toISOString(), hoursWorked });
+      }
+
+      // Store in ImportBatch for later commit
+      const batch = await prisma.importBatch.create({
+        data: {
+          type: 'ATTENDANCE',
+          uploadedBy: req.user!.id,
+          fileName,
+          totalRows: parsedRecords.length,
+          status: 'PREVIEWED',
+          notes: JSON.stringify({ month, year, records: parsedRecords, unmappedEnNos: Array.from(unmappedSet) }),
+        },
+      });
+
+      res.json({
+        batchId: batch.id,
+        month, year,
+        totalRows: parsedRecords.length,
+        unmappedEnNos: Array.from(unmappedSet).sort((a, b) => a - b),
+        sampleRecords: parsedRecords.slice(0, 10),
+      });
+    } catch (err) {
+      console.error('Import preview error:', err);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+});
+
+// POST /api/attendance/import/commit/:batchId — commit previewed batch
+router.post('/import/commit/:batchId', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const batch = await prisma.importBatch.findUnique({ where: { id: req.params.batchId } });
+    if (!batch) { res.status(404).json({ error: 'Import batch not found' }); return; }
+    if (batch.status !== 'PREVIEWED') {
+      res.status(400).json({ error: `Batch is ${batch.status}, cannot commit` });
+      return;
+    }
+    if (batch.type !== 'ATTENDANCE') {
+      res.status(400).json({ error: 'Batch is not an attendance import' });
+      return;
+    }
+
+    const data = JSON.parse(batch.notes || '{}');
+    const { month, year, records, unmappedEnNos } = data;
+
+    if (!records || records.length === 0) {
+      res.status(400).json({ error: 'No records to import' });
+      return;
+    }
+
+    // Block if already imported for this month
+    const existing = await prisma.attendanceImport.findUnique({
+      where: { month_year: { month, year } },
+    });
+    if (existing) {
+      res.status(409).json({ error: 'Attendance for this month was already imported' });
+      return;
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const importBatch = await tx.attendanceImport.create({
+        data: {
+          month, year,
+          fileName: batch.fileName,
+          importedBy: req.user!.id,
+          recordCount: records.length,
+          unmappedEnNos: unmappedEnNos || [],
+        },
+      });
+
+      if (records.length > 0) {
+        await tx.attendanceRecord.createMany({
+          data: records.map((r: any) => ({
+            userId: r.userId,
+            importId: importBatch.id,
+            date: new Date(r.date),
+            checkIn: r.checkIn ? new Date(r.checkIn) : null,
+            checkOut: r.checkOut ? new Date(r.checkOut) : null,
+            hoursWorked: r.hoursWorked,
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      await tx.importBatch.update({
+        where: { id: batch.id },
+        data: { status: 'IMPORTED', successRows: records.length },
+      });
+
+      return importBatch;
+    });
+
+    res.status(201).json({
+      importId: result.id,
+      month, year,
+      saved: records.length,
+      unmappedEnNos: unmappedEnNos || [],
+    });
+  } catch (err) {
+    console.error('Import commit error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/attendance/import/rollback/:batchId — rollback imported batch
+router.post('/import/rollback/:batchId', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const batch = await prisma.importBatch.findUnique({ where: { id: req.params.batchId } });
+    if (!batch) { res.status(404).json({ error: 'Import batch not found' }); return; }
+    if (batch.status !== 'IMPORTED') {
+      res.status(400).json({ error: `Batch is ${batch.status}, cannot rollback` });
+      return;
+    }
+
+    const data = JSON.parse(batch.notes || '{}');
+    const { month, year } = data;
+
+    // Block if payroll finalized
+    const payrollRun = await prisma.payrollRun.findFirst({
+      where: { month, year, status: 'FINALIZED' },
+    });
+    if (payrollRun) {
+      res.status(400).json({ error: 'Cannot rollback — payroll for this month is already finalized.' });
+      return;
+    }
+
+    // Find the attendance import for this month
+    const attendanceImport = await prisma.attendanceImport.findUnique({
+      where: { month_year: { month, year } },
+    });
+
+    await prisma.$transaction(async (tx) => {
+      if (attendanceImport) {
+        await tx.attendanceRecord.deleteMany({ where: { importId: attendanceImport.id } });
+        await tx.attendanceImport.delete({ where: { id: attendanceImport.id } });
+      }
+      await tx.importBatch.update({
+        where: { id: batch.id },
+        data: { status: 'ROLLED_BACK' },
+      });
+    });
+
+    await createAuditLog({
+      actorId: req.user!.id,
+      action: 'ATTENDANCE_IMPORT_ROLLED_BACK',
+      entity: 'ImportBatch',
+      entityId: batch.id,
+    });
+
+    res.json({ message: 'Import rolled back successfully' });
+  } catch (err) {
+    console.error('Import rollback error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

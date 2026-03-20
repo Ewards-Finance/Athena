@@ -160,6 +160,14 @@ export default function Leaves() {
   const [fyFrom, setFyFrom] = useState(_curFY - 1);
   const [fyTo,   setFyTo]   = useState(_curFY);
 
+  // ── Comp-off balance ──
+  const [compOffBalance, setCompOffBalance] = useState(0);
+
+  // ── Sandwich / LWP warnings ──
+  const [sandwichWarning, setSandwichWarning] = useState('');
+  const [lwpWarning,      setLwpWarning]      = useState('');
+  const [docWarning,      setDocWarning]      = useState('');
+
   // ── Form / UI state ──
   const [showForm,       setShowForm]       = useState(false);
   const [overlapWarning, setOverlapWarning] = useState<string | null>(null);
@@ -213,11 +221,32 @@ export default function Leaves() {
     fetchBalances();
     fetchPolicies();
     if (isManagerOrAdmin) fetchTeamOverview();
+    api.get('/compoff/balance').then(r => setCompOffBalance(r.data.balance)).catch(() => {});
   }, []);
 
   // ── Leave actions ─────────────────────────────────────────────────────────
 
   const submitLeave = async (data: any, force = false) => {
+    // Preview first to get sandwich/LWP warnings
+    try {
+      const preview = await api.post(`/leaves?preview=true`, data);
+      const p = preview.data;
+      setSandwichWarning(p.sandwichWarning || '');
+      setLwpWarning(p.lwpWarning || '');
+      setDocWarning(p.documentWarning || '');
+
+      // If warnings exist and this isn't a force submit, show them and wait for confirmation
+      if (!force && (p.sandwichWarning || p.lwpWarning)) {
+        setPendingData(data);
+        return;
+      }
+    } catch { /* preview failed, proceed anyway */ }
+
+    // Clear warnings and submit
+    setSandwichWarning('');
+    setLwpWarning('');
+    setDocWarning('');
+
     await api.post(`/leaves${force ? '?force=true' : ''}`, data);
     setShowForm(false);
     setOverlapWarning(null);
@@ -456,6 +485,45 @@ export default function Leaves() {
             </div>
           )}
 
+          {/* Sandwich / LWP warning modal */}
+          {(sandwichWarning || lwpWarning) && pendingData && !overlapWarning && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 space-y-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                    <span className="text-amber-600 text-sm font-bold">!</span>
+                  </div>
+                  <div className="space-y-2">
+                    <h3 className="font-semibold text-sm">Leave Warnings</h3>
+                    {sandwichWarning && (
+                      <div className="text-sm bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{sandwichWarning}</div>
+                    )}
+                    {lwpWarning && (
+                      <div className="text-sm bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-red-700">{lwpWarning}</div>
+                    )}
+                    {docWarning && (
+                      <div className="text-sm bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-blue-700">{docWarning}</div>
+                    )}
+                  </div>
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <Button variant="outline" size="sm" onClick={() => { setSandwichWarning(''); setLwpWarning(''); setDocWarning(''); setPendingData(null); }}>Cancel</Button>
+                  <Button size="sm" style={{ backgroundColor: '#FD8C27' }} className="text-white" onClick={async () => {
+                    try {
+                      await api.post(`/leaves?force=true`, pendingData);
+                      setSandwichWarning(''); setLwpWarning(''); setDocWarning('');
+                      setShowForm(false); setPendingData(null); reset();
+                      fetchLeaves(); fetchBalances();
+                      toast.success('Leave application submitted');
+                    } catch (err: any) {
+                      toast.error(err?.response?.data?.error || 'Failed to apply leave');
+                    }
+                  }}>Submit Anyway</Button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Reject modal */}
           {rejectId && (
             <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -500,6 +568,13 @@ export default function Leaves() {
                         {p.label} — Unlimited
                       </span>
                     ))}
+                  </div>
+                )}
+                {/* Comp-off balance */}
+                {compOffBalance > 0 && (
+                  <div className="mt-4 flex items-center gap-2 text-sm bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                    <CalendarDays className="h-4 w-4 text-green-600" />
+                    <span><strong>{compOffBalance}</strong> Comp-Off day{compOffBalance !== 1 ? 's' : ''} available — use as leave type "COMP_OFF"</span>
                   </div>
                 )}
               </CardContent>

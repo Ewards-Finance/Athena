@@ -296,8 +296,8 @@ router.get('/payroll', async (req: AuthRequest, res: Response) => {
   const { month, year } = parsed.data;
 
   try {
-    const run = await prisma.payrollRun.findUnique({
-      where:   { month_year: { month, year } },
+    const run = await prisma.payrollRun.findFirst({
+      where:   { month, year },
       include: {
         entries: {
           include: {
@@ -361,6 +361,116 @@ router.get('/payroll', async (req: AuthRequest, res: Response) => {
     });
   } catch (err) {
     console.error('Payroll report error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ─── Statutory Export (TDS / PT) ─────────────────────────────────────────────
+
+router.get('/statutory', async (req: AuthRequest, res: Response) => {
+  const parsed = z.object({
+    month:     z.coerce.number().int().min(1).max(12),
+    year:      z.coerce.number().int().min(2020).max(2100),
+    type:      z.enum(['TDS', 'PT']),
+    companyId: z.string().optional(),
+  }).safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'month, year, and type (TDS|PT) required' });
+    return;
+  }
+  const { month, year, type, companyId } = parsed.data;
+
+  try {
+    const where: any = { month, year };
+    if (companyId) where.companyId = companyId;
+
+    const run = await prisma.payrollRun.findFirst({
+      where,
+      include: {
+        entries: {
+          include: {
+            user: {
+              select: {
+                profile: {
+                  select: { firstName: true, lastName: true, employeeId: true, pan: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!run) {
+      res.status(404).json({ error: 'No payroll run found for the given period' });
+      return;
+    }
+
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet(`${type} Report`);
+
+    if (type === 'TDS') {
+      ws.columns = [
+        { header: 'Employee ID', key: 'employeeId', width: 15 },
+        { header: 'Name', key: 'name', width: 25 },
+        { header: 'PAN', key: 'pan', width: 15 },
+        { header: 'Gross Salary', key: 'gross', width: 15 },
+        { header: 'TDS Deducted', key: 'tds', width: 15 },
+      ];
+
+      for (const entry of run.entries) {
+        const deductions = entry.deductions as any[];
+        const tdsEntry = Array.isArray(deductions)
+          ? deductions.find((d: any) => d.calcType === 'AUTO_TDS')
+          : null;
+
+        ws.addRow({
+          employeeId: entry.user.profile?.employeeId || '',
+          name: `${entry.user.profile?.firstName || ''} ${entry.user.profile?.lastName || ''}`.trim(),
+          pan: entry.user.profile?.pan || '',
+          gross: entry.grossPay,
+          tds: tdsEntry?.amount || 0,
+        });
+      }
+    } else {
+      // PT
+      ws.columns = [
+        { header: 'Employee ID', key: 'employeeId', width: 15 },
+        { header: 'Name', key: 'name', width: 25 },
+        { header: 'Gross Salary', key: 'gross', width: 15 },
+        { header: 'PT Amount', key: 'pt', width: 15 },
+        { header: 'State', key: 'state', width: 15 },
+      ];
+
+      for (const entry of run.entries) {
+        const deductions = entry.deductions as any[];
+        const ptEntry = Array.isArray(deductions)
+          ? deductions.find((d: any) => d.calcType === 'AUTO_PT')
+          : null;
+
+        ws.addRow({
+          employeeId: entry.user.profile?.employeeId || '',
+          name: `${entry.user.profile?.firstName || ''} ${entry.user.profile?.lastName || ''}`.trim(),
+          gross: entry.grossPay,
+          pt: ptEntry?.amount || 0,
+          state: 'West Bengal',
+        });
+      }
+    }
+
+    // Style header row
+    ws.getRow(1).font = { bold: true };
+
+    const MONTH_NAMES = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const fileName = `${type}_Report_${MONTH_NAMES[month]}_${year}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error('Statutory export error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

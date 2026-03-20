@@ -58,22 +58,25 @@ export function countWorkingDays(year: number, month: number, holidays: Date[]):
  * - Health & Education Cess: 4%
  * Returns monthly TDS amount (annual tax / 12), rounded to nearest rupee.
  */
-export function calculateTDS(annualCtc: number): number {
-  const STANDARD_DEDUCTION = 75_000;
-  const taxableIncome = Math.max(0, annualCtc - STANDARD_DEDUCTION);
+export function calculateTDS(
+  annualCtc: number,
+  standardDeduction = 75_000,
+  rebateLimit = 1_200_000,
+): number {
+  const taxableIncome = Math.max(0, annualCtc - standardDeduction);
 
   // Slab computation
   let tax = 0;
-  if      (taxableIncome <= 400_000)  tax = 0;
-  else if (taxableIncome <= 800_000)  tax = (taxableIncome - 400_000)   * 0.05;
+  if      (taxableIncome <= 400_000)   tax = 0;
+  else if (taxableIncome <= 800_000)   tax = (taxableIncome - 400_000)   * 0.05;
   else if (taxableIncome <= 1_200_000) tax = 20_000  + (taxableIncome - 800_000)   * 0.10;
   else if (taxableIncome <= 1_600_000) tax = 60_000  + (taxableIncome - 1_200_000) * 0.15;
   else if (taxableIncome <= 2_000_000) tax = 120_000 + (taxableIncome - 1_600_000) * 0.20;
   else if (taxableIncome <= 2_400_000) tax = 200_000 + (taxableIncome - 2_000_000) * 0.25;
   else                                 tax = 300_000 + (taxableIncome - 2_400_000) * 0.30;
 
-  // Section 87A: full rebate if taxable income ≤ ₹12,00,000
-  if (taxableIncome <= 1_200_000) return 0;
+  // Section 87A: full rebate if taxable income ≤ rebateLimit
+  if (taxableIncome <= rebateLimit) return 0;
 
   // Add 4% cess
   const annualTax = Math.round(tax * 1.04);
@@ -115,13 +118,16 @@ export interface ComponentSnapshot {
  */
 export function computePayslipEntry(params: {
   monthlyCtc:     number;
-  annualCtc?:     number;  // Used for AUTO_TDS calculation; defaults to monthlyCtc * 12
+  annualCtc?:     number;
   workingDays:    number;
   lwpDays:        number;
-  wfhDays?:       number;  // TEMPORARY_WFH approved days → 30% daily deduction
+  wfhDays?:       number;
   components:     ComponentSnapshot[];
   reimbursements: number;
-  // Optional: pass existing manual values to preserve them (used on recompute)
+  // Policy-driven overrides (read from policyEngine, default to hardcoded fallbacks)
+  wfhDeductionRate?:    number;  // e.g. 0.30 from wfh_deduction_pct rule
+  tdsStandardDeduction?: number; // e.g. 75000 from tds_standard_deduction rule
+  tdsRebateLimit?:      number;  // e.g. 1200000 from tds_87a_rebate_limit rule
   existingEarnings?:   Record<string, number>;
   existingDeductions?: Record<string, number>;
 }) {
@@ -129,8 +135,11 @@ export function computePayslipEntry(params: {
     monthlyCtc, workingDays, lwpDays, components,
     reimbursements, existingEarnings = {}, existingDeductions = {},
   } = params;
-  const annualCtc = params.annualCtc ?? monthlyCtc * 12;
-  const wfhDays   = params.wfhDays ?? 0;
+  const annualCtc          = params.annualCtc ?? monthlyCtc * 12;
+  const wfhDays            = params.wfhDays ?? 0;
+  const wfhDeductionRate   = params.wfhDeductionRate   ?? WFH_DEDUCTION_RATE;
+  const tdsStandardDeduct  = params.tdsStandardDeduction ?? 75_000;
+  const tdsRebateLimit     = params.tdsRebateLimit      ?? 1_200_000;
 
   const paidDays = Math.max(0, workingDays - lwpDays);
 
@@ -177,7 +186,7 @@ export function computePayslipEntry(params: {
   const wfhDeduction =
     params.wfhDays !== undefined
       ? (workingDays > 0 && wfhDays > 0
-          ? round2(fullGross * (wfhDays / workingDays) * WFH_DEDUCTION_RATE)
+          ? round2(fullGross * (wfhDays / workingDays) * wfhDeductionRate)
           : 0)
       : (existingDeductions['WFH Deduction'] ?? 0);
   if (wfhDeduction > 0) {
@@ -196,7 +205,7 @@ export function computePayslipEntry(params: {
     if (comp.calcType === 'AUTO_PT') {
       val = calculatePT(proratedGross);
     } else if (comp.calcType === 'AUTO_TDS') {
-      val = calculateTDS(annualCtc);
+      val = calculateTDS(annualCtc, tdsStandardDeduct, tdsRebateLimit);
     } else if (comp.calcType === 'FIXED') {
       val = comp.value;
     } else if (comp.calcType === 'MANUAL') {

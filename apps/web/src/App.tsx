@@ -1,5 +1,5 @@
 /**
- * Athena V2 - Root Application Component
+ * Athena V3.1 - Root Application Component
  * Sets up React Router with protected routes.
  * Unauthenticated users are redirected to /login.
  */
@@ -27,6 +27,13 @@ import Settings           from '@/pages/Settings';
 import Reports            from '@/pages/Reports';
 import Documents          from '@/pages/Documents';
 import Search            from '@/pages/Search';
+import Companies          from '@/pages/Companies';
+import Policies           from '@/pages/Policies';
+import Assignments        from '@/pages/Assignments';
+import ExitManagement     from '@/pages/ExitManagement';
+import Assets             from '@/pages/Assets';
+import Loans              from '@/pages/Loans';
+import CompOff            from '@/pages/CompOff';
 
 // ProtectedRoute: wraps routes that require login
 // If user is not authenticated, redirects to /login
@@ -36,11 +43,19 @@ function ProtectedRoute() {
   return <Outlet />;
 }
 
-// AdminRoute: wraps routes that require ADMIN role
+// AdminRoute: wraps routes that require ADMIN or OWNER role
 function AdminRoute() {
   const { user } = useAuth();
+  if (!user)                                              return <Navigate to="/login"    replace />;
+  if (user.role !== 'ADMIN' && user.role !== 'OWNER')     return <Navigate to="/dashboard" replace />;
+  return <Outlet />;
+}
+
+// OwnerRoute: wraps routes that require OWNER role only
+function OwnerRoute() {
+  const { user } = useAuth();
   if (!user)                   return <Navigate to="/login"    replace />;
-  if (user.role !== 'ADMIN')   return <Navigate to="/dashboard" replace />;
+  if (user.role !== 'OWNER')   return <Navigate to="/dashboard" replace />;
   return <Outlet />;
 }
 
@@ -77,10 +92,17 @@ export default function App() {
             {/* All roles: search */}
             <Route path="/search"                element={<Search />} />
 
+            {/* All roles: assets (employees see own, admin sees all) */}
+            <Route path="/assets"                element={<Assets />} />
+
+            {/* All roles: loans & comp-off */}
+            <Route path="/loans"                 element={<Loans />} />
+            <Route path="/compoff"               element={<CompOff />} />
+
             {/* All roles: reports (Daily Attendance visible to all) */}
             <Route path="/reports"               element={<Reports />} />
 
-            {/* Admin-only routes */}
+            {/* Admin-only routes (ADMIN + OWNER) */}
             <Route element={<AdminRoute />}>
               <Route path="/organization"        element={<Organization />} />
               <Route path="/payroll/runs"         element={<PayrollRuns />} />
@@ -88,6 +110,14 @@ export default function App() {
               <Route path="/payroll/setup"        element={<PayrollSetup />} />
               <Route path="/audit-logs"            element={<AuditLogs />} />
               <Route path="/settings"              element={<Settings />} />
+              <Route path="/companies"             element={<Companies />} />
+              <Route path="/assignments/:userId"   element={<Assignments />} />
+              <Route path="/exit"                  element={<ExitManagement />} />
+            </Route>
+
+            {/* Owner-only routes */}
+            <Route element={<OwnerRoute />}>
+              <Route path="/policies"              element={<Policies />} />
             </Route>
           </Route>
         </Route>
