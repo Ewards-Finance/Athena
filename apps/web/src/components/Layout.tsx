@@ -34,6 +34,7 @@ import {
   Package,
   Landmark,
   CalendarPlus,
+  MapPin,
 } from 'lucide-react';
 import { useAuth }            from '@/hooks/useAuth';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -76,6 +77,12 @@ const navItems = [
     label: 'Comp-Off',
     to:    '/compoff',
     icon:  CalendarPlus,
+    roles: ['OWNER', 'ADMIN', 'MANAGER', 'EMPLOYEE'] as const,
+  },
+  {
+    label: 'Travel Proof',
+    to:    '/travel-proof',
+    icon:  MapPin,
     roles: ['OWNER', 'ADMIN', 'MANAGER', 'EMPLOYEE'] as const,
   },
   {

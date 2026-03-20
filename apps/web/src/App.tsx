@@ -34,6 +34,7 @@ import ExitManagement     from '@/pages/ExitManagement';
 import Assets             from '@/pages/Assets';
 import Loans              from '@/pages/Loans';
 import CompOff            from '@/pages/CompOff';
+import TravelProof        from '@/pages/TravelProof';
 
 // ProtectedRoute: wraps routes that require login
 // If user is not authenticated, redirects to /login
@@ -98,6 +99,7 @@ export default function App() {
             {/* All roles: loans & comp-off */}
             <Route path="/loans"                 element={<Loans />} />
             <Route path="/compoff"               element={<CompOff />} />
+            <Route path="/travel-proof"          element={<TravelProof />} />
 
             {/* All roles: reports (Daily Attendance visible to all) */}
             <Route path="/reports"               element={<Reports />} />

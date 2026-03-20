@@ -1664,43 +1664,62 @@ export default function Attendance() {
 
 function PendingGeoProofs() {
   const { data: proofs = [], isLoading } = useQuery<any[]>({
-    queryKey: ['travel-proof-pending'],
-    queryFn: () => api.get('/travel-proof/pending').then(r => r.data),
+    queryKey: ['travel-proof-all'],
+    queryFn: () => api.get('/travel-proof').then(r => r.data),
   });
+
+  const submitted = proofs.filter((p: any) => p.submittedAt);
+  const missing   = proofs.filter((p: any) => !p.submittedAt);
 
   return (
     <Card>
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2">
           <MapPin className="h-4 w-4 text-amber-500" />
-          Pending Geo Proofs <Badge variant="outline" className="ml-1">{proofs.length}</Badge>
+          Travel Geo Proofs
+          <Badge variant="outline" className="ml-1 text-green-700 border-green-300">{submitted.length} submitted</Badge>
+          {missing.length > 0 && (
+            <Badge variant="outline" className="text-amber-600 border-amber-300">{missing.length} missing</Badge>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent>
         {isLoading ? (
           <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 className="h-4 w-4 animate-spin" /> Loading...</div>
         ) : proofs.length === 0 ? (
-          <p className="text-sm text-gray-500">No pending travel proofs.</p>
+          <p className="text-sm text-gray-500">No travel proof records found.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-gray-500 border-b">
                 <th className="py-2 pr-4">Employee</th>
                 <th className="py-2 pr-4">Travel Date</th>
-                <th className="py-2">Status</th>
+                <th className="py-2 pr-4">Submitted At</th>
+                <th className="py-2">Location</th>
               </tr></thead>
               <tbody>
                 {proofs.map((p: any) => (
                   <tr key={p.id} className="border-b last:border-0">
-                    <td className="py-2 pr-4">{p.user?.profile?.firstName} {p.user?.profile?.lastName}</td>
-                    <td className="py-2 pr-4">{new Date(p.proofDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                    <td className="py-2 pr-4 font-medium">
+                      {p.user?.profile?.firstName} {p.user?.profile?.lastName}
+                      <span className="text-xs text-gray-400 ml-1">({p.user?.profile?.employeeId})</span>
+                    </td>
+                    <td className="py-2 pr-4">
+                      {new Date(p.proofDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    </td>
+                    <td className="py-2 pr-4 text-xs text-gray-500">
+                      {p.submittedAt
+                        ? new Date(p.submittedAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })
+                        : '—'}
+                    </td>
                     <td className="py-2">
-                      {p.submittedAt ? (
-                        <a href={p.mapsLink} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline text-xs">
-                          View on Maps
+                      {p.mapsLink ? (
+                        <a href={p.mapsLink} target="_blank" rel="noopener noreferrer"
+                           className="inline-flex items-center gap-1 text-blue-600 hover:underline text-xs font-medium">
+                          <MapPin className="h-3 w-3" /> View on Maps
                         </a>
                       ) : (
-                        <Badge variant="outline" className="text-amber-600 border-amber-300">No Proof</Badge>
+                        <Badge variant="outline" className="text-amber-600 border-amber-300 text-xs">No Proof</Badge>
                       )}
                     </td>
                   </tr>

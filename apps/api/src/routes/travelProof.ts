@@ -13,6 +13,11 @@ import { z } from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { createNotification } from '../lib/notify';
 
+// Use local calendar date (not UTC) to avoid timezone-off-by-one issues on IST servers
+function localDateStr(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 const router = Router();
 
 router.use(authenticate);
@@ -34,7 +39,7 @@ router.get('/today', async (req: AuthRequest, res: Response) => {
     today.setHours(0, 0, 0, 0);
     const todayEnd = new Date(today);
     todayEnd.setHours(23, 59, 59, 999);
-    const todayStr = today.toISOString().split('T')[0];
+    const todayStr = localDateStr();
 
     // Find a TRAVELLING leave that covers today (PENDING or APPROVED — not REJECTED/CANCELLED)
     const leave = await prisma.leaveRequest.findFirst({
@@ -142,16 +147,16 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     }
 
     // Validate: proofDate must be TODAY — employees can only submit proof for the current day
-    const proofDateStr = date.toISOString().split('T')[0];
-    const todayStr = new Date().toISOString().split('T')[0];
+    const proofDateStr = localDateStr(date);
+    const todayStr = localDateStr();
     if (proofDateStr !== todayStr) {
       res.status(400).json({ error: 'You can only submit location proof for today\'s date' });
       return;
     }
 
     // Validate: today must be within the leave date range
-    const startStr = new Date(leave.startDate).toISOString().split('T')[0];
-    const endStr   = new Date(leave.endDate).toISOString().split('T')[0];
+    const startStr = localDateStr(new Date(leave.startDate));
+    const endStr   = localDateStr(new Date(leave.endDate));
     if (proofDateStr < startStr || proofDateStr > endStr) {
       res.status(400).json({ error: 'Today is not within your travelling leave dates' });
       return;
