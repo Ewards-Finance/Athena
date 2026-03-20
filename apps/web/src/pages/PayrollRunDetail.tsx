@@ -5,8 +5,9 @@
  * Admin can finalize and download the .xlsx report.
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate }           from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent }                from '@/components/ui/card';
 import { Button }                           from '@/components/ui/button';
 import { Badge }                            from '@/components/ui/badge';
@@ -68,10 +69,7 @@ function fmt(n: number) {
 export default function PayrollRunDetail() {
   const { id }   = useParams<{ id: string }>();
   const navigate = useNavigate();
-
-  const [run, setRun]         = useState<PayrollRun | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState('');
+  const queryClient = useQueryClient();
 
   // Track local edits to MANUAL cells: { entryId: { componentName: value } }
   const [manualEdits, setManualEdits] = useState<Record<string, Record<string, string>>>({});
@@ -84,32 +82,31 @@ export default function PayrollRunDetail() {
   const [reopening, setReopening]     = useState(false);
 
   // ── Fetch run ─────────────────────────────────────────────────────────────
-  const fetchRun = useCallback(async () => {
-    if (!id) return;
-    setLoading(true);
-    try {
-      const res = await api.get(`/payroll/runs/${id}`);
-      setRun(res.data);
-      // Initialise manual edit state from existing values
-      const initEdits: Record<string, Record<string, string>> = {};
-      for (const entry of res.data.entries as PayslipEntry[]) {
-        initEdits[entry.id] = {};
-        for (const comp of (res.data.components as PayrollComponent[]).filter((c) => c.calcType === 'MANUAL')) {
-          const v = comp.type === 'EARNING'
-            ? (entry.earnings[comp.name] ?? 0)
-            : (entry.deductions[comp.name] ?? 0);
-          initEdits[entry.id][comp.name] = String(v);
-        }
-      }
-      setManualEdits(initEdits);
-    } catch {
-      setError('Failed to load payroll run.');
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
+  const { data: run, isLoading: loading, isError } = useQuery({
+    queryKey: ['payroll-run', id],
+    queryFn: () => api.get<PayrollRun>(`/payroll/runs/${id}`).then((r) => r.data),
+    enabled: !!id,
+  });
 
-  useEffect(() => { fetchRun(); }, [fetchRun]);
+  const error = isError ? 'Failed to load payroll run.' : '';
+
+  const fetchRun = () => queryClient.invalidateQueries({ queryKey: ['payroll-run', id] });
+
+  // Initialise manual edit state when run data changes
+  useEffect(() => {
+    if (!run) return;
+    const initEdits: Record<string, Record<string, string>> = {};
+    for (const entry of run.entries) {
+      initEdits[entry.id] = {};
+      for (const comp of run.components.filter((c) => c.calcType === 'MANUAL')) {
+        const v = comp.type === 'EARNING'
+          ? (entry.earnings[comp.name] ?? 0)
+          : (entry.deductions[comp.name] ?? 0);
+        initEdits[entry.id][comp.name] = String(v);
+      }
+    }
+    setManualEdits(initEdits);
+  }, [run]);
 
   // ── Save manual edits for one entry ───────────────────────────────────────
   const handleSaveEntry = async (entry: PayslipEntry) => {
@@ -128,24 +125,11 @@ export default function PayrollRunDetail() {
     setSavingEntry((p) => ({ ...p, [entry.id]: true }));
     setSaveError((p) => ({ ...p, [entry.id]: '' }));
     try {
-      const res = await api.patch(`/payroll/runs/${id}/entries/${entry.id}`, {
+      await api.patch(`/payroll/runs/${id}/entries/${entry.id}`, {
         manualEarnings,
         manualDeductions,
       });
-      // Update local run state with recalculated values
-      setRun((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          entries: prev.entries.map((e) =>
-            e.id === entry.id
-              ? { ...e, earnings: res.data.earnings, deductions: res.data.deductions,
-                  grossPay: res.data.grossPay, totalDeductions: res.data.totalDeductions,
-                  netPay: res.data.netPay }
-              : e
-          ),
-        };
-      });
+      await queryClient.invalidateQueries({ queryKey: ['payroll-run', id] });
     } catch (err: any) {
       setSaveError((p) => ({
         ...p,
@@ -208,9 +192,9 @@ export default function PayrollRunDetail() {
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
-  if (loading) return <p className="text-gray-400 text-sm p-6">Loading…</p>;
-  if (error)   return <p className="text-red-500 text-sm p-6">{error}</p>;
-  if (!run)    return null;
+  if (loading)   return <p className="text-gray-400 text-sm p-6">Loading…</p>;
+  if (error)     return <p className="text-red-500 text-sm p-6">{error}</p>;
+  if (!run)      return null;
 
   const isDraft  = run.status === 'DRAFT';
   const manualComps = run.components.filter((c) => c.calcType === 'MANUAL');

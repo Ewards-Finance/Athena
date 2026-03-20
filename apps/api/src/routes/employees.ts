@@ -8,7 +8,7 @@
  */
 
 import { Router, Response }          from 'express';
-import { PrismaClient }              from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import bcrypt                        from 'bcryptjs';
 import { z }                         from 'zod';
 import multer                        from 'multer';
@@ -19,7 +19,6 @@ import { createAuditLog }            from '../lib/audit';
 const xlsxUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single('file');
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // All employee routes require authentication
 router.use(authenticate);

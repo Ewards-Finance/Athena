@@ -20,9 +20,8 @@ import { promisify } from 'util';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from './prisma';
 
-const prisma = new PrismaClient();
 const execFileAsync = promisify(execFile);
 
 const GITHUB_API = 'https://api.github.com';

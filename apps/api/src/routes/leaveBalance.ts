@@ -7,14 +7,13 @@
  */
 
 import { Router, Response }         from 'express';
-import { PrismaClient }             from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { z }                        from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { currentFYYear } from '../lib/fyUtils';
 import { createNotification }       from '../lib/notify';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 router.use(authenticate);
 
@@ -163,27 +162,30 @@ router.post('/reset-fy', authorize(['ADMIN']), async (req: AuthRequest, res: Res
     let carried = 0;
     let reset   = 0;
 
-    for (const u of activeUsers) {
-      // Get fromYear balances (carry-forward source)
-      const fromBalances = await prisma.leaveBalance.findMany({
-        where: { userId: u.id, year: fromYear },
-      });
-
-      for (const policy of policies) {
-        const fromBal   = fromBalances.find((b) => b.leaveType === policy.leaveType);
-        const remaining = fromBal ? Math.max(0, fromBal.total - fromBal.used) : 0;
-        const newTotal  = (defaultTotals[policy.leaveType] ?? 0) + remaining;
-
-        await prisma.leaveBalance.upsert({
-          where:  { userId_year_leaveType: { userId: u.id, year: toYear, leaveType: policy.leaveType } },
-          update: { total: newTotal },
-          create: { userId: u.id, year: toYear, leaveType: policy.leaveType, total: newTotal, used: 0 },
+    // Wrap all upserts in a transaction so a mid-reset failure doesn't leave
+    // some employees on the new FY and others still on the old one.
+    await prisma.$transaction(async (tx) => {
+      for (const u of activeUsers) {
+        const fromBalances = await tx.leaveBalance.findMany({
+          where: { userId: u.id, year: fromYear },
         });
 
-        if (remaining > 0) carried++;
-        reset++;
+        for (const policy of policies) {
+          const fromBal   = fromBalances.find((b) => b.leaveType === policy.leaveType);
+          const remaining = fromBal ? Math.max(0, fromBal.total - fromBal.used) : 0;
+          const newTotal  = (defaultTotals[policy.leaveType] ?? 0) + remaining;
+
+          await tx.leaveBalance.upsert({
+            where:  { userId_year_leaveType: { userId: u.id, year: toYear, leaveType: policy.leaveType } },
+            update: { total: newTotal },
+            create: { userId: u.id, year: toYear, leaveType: policy.leaveType, total: newTotal, used: 0 },
+          });
+
+          if (remaining > 0) carried++;
+          reset++;
+        }
       }
-    }
+    });
 
     // Notify all admins that reset is complete
     const admins = await prisma.user.findMany({ where: { role: 'ADMIN', isActive: true }, select: { id: true } });

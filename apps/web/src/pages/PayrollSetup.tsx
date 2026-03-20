@@ -5,6 +5,7 @@
  */
 
 import { useState, useEffect } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Card, CardContent, CardHeader, CardTitle,
 } from '@/components/ui/card';
@@ -56,11 +57,9 @@ const CALC_OPTIONS: { value: string; label: string }[] = [
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function PayrollSetup() {
   const [tab, setTab] = useState<'components' | 'ctc'>('components');
+  const queryClient = useQueryClient();
 
   // --- Components state ---
-  const [components, setComponents]   = useState<PayrollComponent[]>([]);
-  const [compLoading, setCompLoading] = useState(true);
-  const [compError, setCompError]     = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [newComp, setNewComp]         = useState({
     name: '', type: 'EARNING' as 'EARNING' | 'DEDUCTION',
@@ -71,45 +70,34 @@ export default function PayrollSetup() {
   const [addLoading, setAddLoading] = useState(false);
 
   // --- CTC state ---
-  const [employees, setEmployees] = useState<EmployeeCTC[]>([]);
-  const [ctcLoading, setCtcLoading] = useState(false);
   const [ctcValues, setCtcValues]   = useState<Record<string, string>>({});
   const [ctcSaving, setCtcSaving]   = useState<Record<string, boolean>>({});
   const [ctcErrors, setCtcErrors]   = useState<Record<string, string>>({});
 
   // ── Fetch components ────────────────────────────────────────────────────────
-  const fetchComponents = async () => {
-    setCompLoading(true);
-    try {
-      const res = await api.get('/payroll/components');
-      setComponents(res.data);
-    } catch {
-      setCompError('Failed to load payroll components.');
-    } finally {
-      setCompLoading(false);
-    }
-  };
+  const { data: components = [], isLoading: compLoading, isError: compIsError } = useQuery({
+    queryKey: ['payroll-components'],
+    queryFn: () => api.get<PayrollComponent[]>('/payroll/components').then((r) => r.data),
+  });
+
+  const compError = compIsError ? 'Failed to load payroll components.' : '';
 
   // ── Fetch employees with CTC ─────────────────────────────────────────────────
-  const fetchEmployees = async () => {
-    setCtcLoading(true);
-    try {
-      const res = await api.get('/payroll/employees-ctc');
-      setEmployees(res.data);
-      const vals: Record<string, string> = {};
-      for (const emp of res.data as EmployeeCTC[]) {
-        vals[emp.userId] = emp.annualCtc != null ? String(emp.annualCtc) : '';
-      }
-      setCtcValues(vals);
-    } catch {
-      // ignore
-    } finally {
-      setCtcLoading(false);
-    }
-  };
+  const { data: employees = [], isLoading: ctcLoading } = useQuery({
+    queryKey: ['payroll-employees-ctc'],
+    queryFn: () => api.get<EmployeeCTC[]>('/payroll/employees-ctc').then((r) => r.data),
+    enabled: tab === 'ctc',
+  });
 
-  useEffect(() => { fetchComponents(); }, []);
-  useEffect(() => { if (tab === 'ctc') fetchEmployees(); }, [tab]);
+  // Initialise CTC values when employees data loads
+  useEffect(() => {
+    if (employees.length === 0) return;
+    const vals: Record<string, string> = {};
+    for (const emp of employees) {
+      vals[emp.userId] = emp.annualCtc != null ? String(emp.annualCtc) : '';
+    }
+    setCtcValues(vals);
+  }, [employees]);
 
   // ── Add component ────────────────────────────────────────────────────────────
   const handleAddComponent = async () => {
@@ -132,7 +120,7 @@ export default function PayrollSetup() {
       });
       setNewComp({ name: '', type: 'EARNING', calcType: 'PERCENTAGE_OF_CTC', value: '' });
       setShowAddForm(false);
-      fetchComponents();
+      await queryClient.invalidateQueries({ queryKey: ['payroll-components'] });
     } catch (err: any) {
       setAddError(err?.response?.data?.error ?? 'Failed to add component.');
     } finally {
@@ -145,7 +133,7 @@ export default function PayrollSetup() {
     if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
     try {
       await api.delete(`/payroll/components/${id}`);
-      fetchComponents();
+      await queryClient.invalidateQueries({ queryKey: ['payroll-components'] });
     } catch (err: any) {
       alert(err?.response?.data?.error ?? 'Failed to delete component.');
     }
@@ -163,9 +151,6 @@ export default function PayrollSetup() {
     setCtcErrors((p) => ({ ...p, [userId]: '' }));
     try {
       await api.put(`/payroll/employees-ctc/${userId}`, { annualCtc: num });
-      setEmployees((prev) =>
-        prev.map((e) => e.userId === userId ? { ...e, annualCtc: num } : e)
-      );
     } catch (err: any) {
       setCtcErrors((p) => ({ ...p, [userId]: err?.response?.data?.error ?? 'Save failed.' }));
     } finally {

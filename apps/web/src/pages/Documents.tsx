@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api                    from '../lib/api';
 import { useAuth }             from '../hooks/useAuth';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -43,11 +44,9 @@ interface Doc {
 export default function Documents() {
   const { user }              = useAuth();
   const isAdmin               = user?.role === 'ADMIN';
+  const queryClient           = useQueryClient();
 
-  const [employees, setEmployees]         = useState<Employee[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<string>('');
-  const [docs, setDocs]                   = useState<Doc[]>([]);
-  const [loadingDocs, setLoadingDocs]     = useState(false);
 
   // Upload dialog
   const [showUpload, setShowUpload]   = useState(false);
@@ -58,29 +57,30 @@ export default function Documents() {
   });
   const [uploadingFile, setUploadingFile] = useState(false);
 
-  // On mount: if admin, load employee list; otherwise use own id
+  // Admin employees list
+  const { data: employees = [] } = useQuery({
+    queryKey: ['employees-list'],
+    queryFn: () => api.get<Employee[]>('/employees').then((r) => r.data),
+    enabled: isAdmin,
+  });
+
+  // Set initial selected user once employees load (admin) or from own id (non-admin)
   useEffect(() => {
     if (isAdmin) {
-      api.get('/employees').then((r) => {
-        setEmployees(r.data);
-        if (r.data.length > 0) {
-          setSelectedUserId(r.data[0].id);
-        }
-      }).catch(() => {});
+      if (employees.length > 0 && !selectedUserId) {
+        setSelectedUserId(employees[0].id);
+      }
     } else {
       setSelectedUserId(user?.id ?? '');
     }
-  }, [isAdmin, user?.id]);
+  }, [isAdmin, employees, user?.id]);
 
-  // Load docs whenever selected employee changes
-  useEffect(() => {
-    if (!selectedUserId) return;
-    setLoadingDocs(true);
-    api.get(`/documents/${selectedUserId}`)
-      .then((r) => setDocs(r.data))
-      .catch(() => setDocs([]))
-      .finally(() => setLoadingDocs(false));
-  }, [selectedUserId]);
+  // Docs list for selected user
+  const { data: docs = [], isLoading: loadingDocs } = useQuery({
+    queryKey: ['documents', selectedUserId],
+    queryFn: () => api.get<Doc[]>(`/documents/${selectedUserId}`).then((r) => r.data),
+    enabled: !!selectedUserId,
+  });
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -106,9 +106,7 @@ export default function Documents() {
       await api.post(`/documents/${selectedUserId}`, form);
       setShowUpload(false);
       setForm({ category: 'OTHER', name: '', description: '', fileUrl: '' });
-      // Reload docs
-      const r = await api.get(`/documents/${selectedUserId}`);
-      setDocs(r.data);
+      await queryClient.invalidateQueries({ queryKey: ['documents', selectedUserId] });
     } catch (err: any) {
       setUploadErr(err?.response?.data?.error ?? 'Failed to add document');
     } finally {
@@ -120,7 +118,7 @@ export default function Documents() {
     if (!confirm('Delete this document?')) return;
     try {
       await api.delete(`/documents/${docId}`);
-      setDocs((prev) => prev.filter((d) => d.id !== docId));
+      await queryClient.invalidateQueries({ queryKey: ['documents', selectedUserId] });
     } catch {}
   }
 

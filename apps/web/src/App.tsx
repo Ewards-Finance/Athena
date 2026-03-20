@@ -6,6 +6,7 @@
 
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { useAuth }        from '@/hooks/useAuth';
+import ServerStatus       from '@/components/ServerStatus';
 import Layout             from '@/components/Layout';
 import Login              from '@/pages/Login';
 import Dashboard          from '@/pages/Dashboard';
@@ -46,6 +47,7 @@ function AdminRoute() {
 export default function App() {
   return (
     <BrowserRouter>
+      <ServerStatus />
       <Routes>
         {/* Public routes */}
         <Route path="/login" element={<Login />} />

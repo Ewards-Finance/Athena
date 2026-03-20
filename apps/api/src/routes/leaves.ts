@@ -11,7 +11,7 @@
  */
 
 import { Router, Response }         from 'express';
-import { PrismaClient }             from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { z }                        from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { getOrCreateBalances }      from './leaveBalance';
@@ -22,7 +22,6 @@ import { sendLeaveApprovedEmail, sendLeaveRejectedEmail } from '../lib/email';
 import { UNLIMITED_LEAVE_TYPES } from '../lib/payrollEngine';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 router.use(authenticate);
 
@@ -179,7 +178,7 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER']), async (req: AuthRequest, re
         select: { id: true, leaveType: true, startDate: true, endDate: true, status: true },
       });
       if (overlapping.length > 0) {
-        res.status(200).json({
+        res.status(409).json({
           warning:          true,
           message:          'You already have a leave request that overlaps with the selected dates. Submit again to confirm.',
           conflictingLeaves: overlapping,

@@ -5,14 +5,13 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { PrismaClient }              from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import bcrypt                        from 'bcryptjs';
 import jwt                           from 'jsonwebtoken';
 import { z }                         from 'zod';
 import { authenticate, AuthRequest } from '../middleware/auth';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // Zod schema: validates login input before touching the database
 const loginSchema = z.object({

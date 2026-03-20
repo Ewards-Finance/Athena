@@ -4,10 +4,11 @@
  * Admin only: add or delete holidays.
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useForm }     from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z }           from 'zod';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth }     from '@/hooks/useAuth';
 import api             from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -67,8 +68,7 @@ function isToday(dateStr: string) {
 
 export default function Holidays() {
   const { user } = useAuth();
-  const [holidays, setHolidays]     = useState<Holiday[]>([]);
-  const [loading, setLoading]       = useState(true);
+  const queryClient             = useQueryClient();
   const [showForm, setShowForm]     = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
@@ -78,26 +78,17 @@ export default function Holidays() {
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } =
     useForm<HolidayFormData>({ resolver: zodResolver(holidaySchema) });
 
-  const fetchHolidays = async () => {
-    setLoading(true);
-    try {
-      const { data } = await api.get<Holiday[]>('/holidays');
-      setHolidays(data);
-    } catch {
-      // silent
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { fetchHolidays(); }, []);
+  const { data: holidays = [], isLoading: loading } = useQuery({
+    queryKey: ['holidays'],
+    queryFn: () => api.get<Holiday[]>('/holidays').then((r) => r.data),
+  });
 
   const onSubmit = async (data: HolidayFormData) => {
     try {
       await api.post('/holidays', data);
       reset();
       setShowForm(false);
-      fetchHolidays();
+      await queryClient.invalidateQueries({ queryKey: ['holidays'] });
     } catch (err: any) {
       alert(err?.response?.data?.error || 'Failed to add holiday');
     }
@@ -108,7 +99,7 @@ export default function Holidays() {
     setDeletingId(id);
     try {
       await api.delete(`/holidays/${id}`);
-      fetchHolidays();
+      await queryClient.invalidateQueries({ queryKey: ['holidays'] });
     } catch (err: any) {
       alert(err?.response?.data?.error || 'Failed to delete holiday');
     } finally {

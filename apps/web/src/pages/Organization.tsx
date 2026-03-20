@@ -4,10 +4,11 @@
  * Tab 2: Leave Quota Management — set per-employee annual leave totals
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useForm }     from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z }           from 'zod';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth }     from '@/hooks/useAuth';
 import api             from '@/lib/api';
 import { formatDate }  from '@/lib/utils';
@@ -244,9 +245,8 @@ function QuotaRow({ user, year, policyTypes }: { user: OverviewUser; year: numbe
 
 export default function Organization() {
   const { user: currentUser }   = useAuth();
-  const [employees, setEmployees] = useState<Employee[]>([]);
-  const [loading, setLoading]     = useState(true);
-  const [search, setSearch]       = useState('');
+  const queryClient             = useQueryClient();
+  const [search, setSearch]     = useState('');
 
   // Employment status change state
   const [statusEmp,      setStatusEmp]      = useState<Employee | null>(null);
@@ -292,14 +292,12 @@ export default function Organization() {
     defaultValues: { role: 'EMPLOYEE' },
   });
 
-  const fetchEmployees = () => {
-    setLoading(true);
-    api.get<Employee[]>('/employees')
-      .then(({ data }) => setEmployees(data))
-      .finally(() => setLoading(false));
-  };
+  const { data: employees = [], isLoading: loading } = useQuery({
+    queryKey: ['employees'],
+    queryFn: () => api.get<Employee[]>('/employees').then(({ data }) => data),
+  });
 
-  useEffect(() => { fetchEmployees(); }, []);
+  const fetchEmployees = () => queryClient.invalidateQueries({ queryKey: ['employees'] });
 
 
   // ── Add Employee ──
@@ -329,7 +327,7 @@ export default function Organization() {
     setDeactivatingId(emp.id);
     try {
       await api.delete(`/employees/${emp.id}`);
-      setEmployees((prev) => prev.filter((e) => e.id !== emp.id));
+      await queryClient.invalidateQueries({ queryKey: ['employees'] });
     } catch (err: any) {
       alert(err?.response?.data?.error || 'Failed to deactivate employee');
     } finally {
@@ -438,9 +436,7 @@ export default function Organization() {
     setStatusError('');
     try {
       await api.patch(`/employees/${statusEmp.id}/status`, { employmentStatus: newStatus });
-      setEmployees((prev) =>
-        prev.map((e) => e.id === statusEmp.id ? { ...e, employmentStatus: newStatus } : e)
-      );
+      await queryClient.invalidateQueries({ queryKey: ['employees'] });
       setStatusEmp(null);
       setNewStatus('');
     } catch (err: any) {

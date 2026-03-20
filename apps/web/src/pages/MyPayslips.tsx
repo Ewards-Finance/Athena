@@ -3,7 +3,8 @@
  * Employees can view their finalized payslip history with earnings/deductions breakdown.
  */
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent }   from '@/components/ui/card';
 import { Badge }               from '@/components/ui/badge';
 import api                     from '@/lib/api';
@@ -39,26 +40,15 @@ function fmt(n: number) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function MyPayslips() {
-  const [payslips, setPayslips] = useState<PayslipEntry[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [error, setError]       = useState('');
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await api.get('/payroll/my-payslips');
-        setPayslips(res.data);
-      } catch {
-        setError('Failed to load payslips.');
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
+  const { data: payslips = [], isLoading: loading, isError } = useQuery({
+    queryKey: ['my-payslips'],
+    queryFn: () => api.get<PayslipEntry[]>('/payroll/my-payslips').then((r) => r.data),
+  });
 
   if (loading) return <p className="text-gray-400 text-sm p-6">Loading payslips…</p>;
-  if (error)   return <p className="text-red-500 text-sm p-6">{error}</p>;
+  if (isError)   return <p className="text-red-500 text-sm p-6">Failed to load payslips.</p>;
 
   return (
     <div className="space-y-6">

@@ -45,7 +45,15 @@ export default function Login() {
       await login(data.email, data.password);
       navigate('/dashboard');
     } catch (err: any) {
-      setApiError(err?.response?.data?.error || 'Login failed. Please check your credentials.');
+      if (!err.response) {
+        setApiError('Cannot connect to the server. Please check your network connection or contact your administrator.');
+      } else if (err.response.status === 401) {
+        setApiError('Incorrect email or password. Please check your credentials and try again.');
+      } else if (err.response.status >= 500) {
+        setApiError('A server error occurred. Please try again in a moment or contact your administrator.');
+      } else {
+        setApiError(err.response.data?.error || 'Login failed. Please try again.');
+      }
     }
   };
 

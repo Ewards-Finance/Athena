@@ -3,8 +3,9 @@
  * Lists all payroll runs and allows creating a new one.
  */
 
-import { useState, useEffect }  from 'react';
+import { useState }  from 'react';
 import { useNavigate }          from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge }  from '@/components/ui/badge';
@@ -30,10 +31,7 @@ const MONTHS = [
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function PayrollRuns() {
   const navigate = useNavigate();
-
-  const [runs, setRuns]       = useState<PayrollRun[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState('');
+  const queryClient = useQueryClient();
 
   // New run form
   const [showForm, setShowForm]   = useState(false);
@@ -42,19 +40,12 @@ export default function PayrollRuns() {
   const [creating, setCreating]   = useState(false);
   const [createError, setCreateError] = useState('');
 
-  const fetchRuns = async () => {
-    setLoading(true);
-    try {
-      const res = await api.get('/payroll/runs');
-      setRuns(res.data);
-    } catch {
-      setError('Failed to load payroll runs.');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const { data: runs = [], isLoading: loading, isError } = useQuery({
+    queryKey: ['payroll-runs'],
+    queryFn: () => api.get<PayrollRun[]>('/payroll/runs').then((r) => r.data),
+  });
 
-  useEffect(() => { fetchRuns(); }, []);
+  const error = isError ? 'Failed to load payroll runs.' : '';
 
   // Create new run
   const handleCreate = async () => {
@@ -80,7 +71,7 @@ export default function PayrollRuns() {
     if (!confirm(`Delete DRAFT payroll run for ${MONTHS[month]} ${year}? This cannot be undone.`)) return;
     try {
       await api.delete(`/payroll/runs/${id}`);
-      fetchRuns();
+      await queryClient.invalidateQueries({ queryKey: ['payroll-runs'] });
     } catch (err: any) {
       alert(err?.response?.data?.error ?? 'Failed to delete.');
     }
@@ -93,7 +84,7 @@ export default function PayrollRuns() {
     setReopening(id);
     try {
       await api.post(`/payroll/runs/${id}/reopen`);
-      fetchRuns();
+      await queryClient.invalidateQueries({ queryKey: ['payroll-runs'] });
     } catch (err: any) {
       alert(err?.response?.data?.error ?? 'Failed to reopen run.');
     } finally {

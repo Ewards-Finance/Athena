@@ -4,9 +4,8 @@
  * Call createNotification() from any route to fire a notification to a user.
  */
 
-import { PrismaClient } from '@prisma/client';
+import { prisma } from './prisma';
 
-const prisma = new PrismaClient();
 
 export interface NotificationPayload {
   userId:  string;

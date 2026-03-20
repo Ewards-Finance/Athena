@@ -18,14 +18,13 @@
  */
 
 import { Router, Response }    from 'express';
-import { PrismaClient }        from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { z }                   from 'zod';
 import multer                  from 'multer';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { createAuditLog }      from '../lib/audit';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 // Memory-storage multer for .txt import (no disk write needed)
 const txtUpload = multer({

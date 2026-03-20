@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import api from '../lib/api';
 import { useAuth } from '../hooks/useAuth';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -49,18 +50,13 @@ function SimpleBar({ label, count, max, color }: { label: string; count: number;
 }
 
 function HRReport() {
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    api.get('/reports/hr')
-      .then((r) => setData(r.data))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  const { data, isLoading: loading, isError } = useQuery({
+    queryKey: ['hr-report'],
+    queryFn: () => api.get('/reports/hr').then((r) => r.data),
+  });
 
   if (loading) return <p className="text-muted-foreground py-6">Loading...</p>;
-  if (!data) return <p className="text-red-500 py-6">Failed to load HR report.</p>;
+  if (isError || !data) return <p className="text-red-500 py-6">Failed to load HR report.</p>;
 
   const maxDept = Math.max(...(data.byDepartment?.map((d: any) => d.count) ?? [1]));
   const maxTenure = Math.max(...(data.tenureBuckets?.map((t: any) => t.count) ?? [1]));
@@ -418,18 +414,11 @@ function Section({ title, items, emptyText }: { title: string; items: any[]; emp
 function DailyAttendance() {
   const todayStr = new Date().toISOString().slice(0, 10);
   const [date, setDate] = useState(todayStr);
-  const [data, setData] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
 
-  function load() {
-    setLoading(true);
-    api.get(`/daily-attendance?date=${date}`)
-      .then((r) => setData(r.data))
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  }
-
-  useEffect(() => { load(); }, [date]);
+  const { data, isLoading: loading, isError } = useQuery({
+    queryKey: ['daily-attendance', date],
+    queryFn: () => api.get(`/daily-attendance?date=${date}`).then((r) => r.data),
+  });
 
   return (
     <div className="space-y-5">
@@ -497,7 +486,7 @@ function DailyAttendance() {
         </div>
       )}
 
-      {!loading && !data && <p className="text-sm text-red-500">Failed to load attendance data.</p>}
+      {!loading && (isError || !data) && <p className="text-sm text-red-500">Failed to load attendance data.</p>}
     </div>
   );
 }

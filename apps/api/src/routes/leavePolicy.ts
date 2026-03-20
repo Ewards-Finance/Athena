@@ -9,12 +9,12 @@
  */
 
 import { Router, Response }   from 'express';
-import { PrismaClient }       from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { z }                  from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
+import { currentFYYear } from '../lib/fyUtils';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 router.use(authenticate);
 
@@ -83,8 +83,8 @@ router.post('/', authorize(['ADMIN']), async (req: AuthRequest, res: Response) =
       data: { leaveType: leaveType as any, label, defaultTotal, isActive: true },
     });
 
-    // Auto-create LeaveBalance records for all active employees for the current year
-    const year = new Date().getFullYear();
+    // Auto-create LeaveBalance records for all active employees for the current FY year
+    const year = currentFYYear();
     const users = await prisma.user.findMany({
       where: { isActive: true },
       select: { id: true },
@@ -149,7 +149,7 @@ router.delete('/:id', authorize(['ADMIN']), async (req: AuthRequest, res: Respon
 // Sets total = policy.defaultTotal for each active leave type.
 // Does NOT reduce total below already-used days to avoid negative balances.
 router.post('/apply-all', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
-  const year = Number(req.query.year) || new Date().getFullYear();
+  const year = Number(req.query.year) || currentFYYear();
 
   try {
     const policies = await prisma.leavePolicy.findMany({ where: { isActive: true } });

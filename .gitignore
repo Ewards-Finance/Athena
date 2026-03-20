@@ -14,3 +14,19 @@ coverage/
 
 apps/api/uploads/
 employee_import_template.xlsx
+
+# Claude Code local files
+.claude/
+
+# Planning & analysis docs
+request1.txt
+request2.txt
+request3.txt
+request4.txt
+request5.txt
+Feedback_gap_answers.txt
+V3.1-Questions-For-Sir.md
+CEO-Feedback-Gap-Analysis.md
+Athena-Product-Overview.md
+Athena-V3-Blueprint.md
+Athena-V3.1-Build-Blueprint.md

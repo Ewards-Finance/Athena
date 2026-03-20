@@ -3,10 +3,11 @@
  * Employees submit claims; Admin/Manager approve/reject; Admin marks as paid.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useForm }     from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z }           from 'zod';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth }     from '@/hooks/useAuth';
 import api             from '@/lib/api';
 import { formatDate, claimStatusColor, resolveUploadUrl } from '@/lib/utils';
@@ -52,10 +53,14 @@ const CATEGORIES = [
 
 export default function Claims() {
   const { user }                = useAuth();
-  const [claims, setClaims]     = useState<Claim[]>([]);
-  const [loading, setLoading]   = useState(true);
+  const queryClient             = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+
+  const { data: claims = [], isLoading: loading } = useQuery({
+    queryKey: ['claims'],
+    queryFn: () => api.get<Claim[]>('/claims').then((r) => r.data),
+  });
 
   // Bill file upload state (outside RHF)
   const [billFile, setBillFile]         = useState<File | null>(null);
@@ -65,17 +70,6 @@ export default function Claims() {
 
   const { register, handleSubmit, reset, formState: { errors, isSubmitting } } =
     useForm<ClaimFormData>({ resolver: zodResolver(claimSchema) });
-
-  const fetchClaims = async () => {
-    try {
-      const { data } = await api.get<Claim[]>('/claims');
-      setClaims(data);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { fetchClaims(); }, []);
 
   // ── Upload bill file immediately on select ──
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -115,7 +109,7 @@ export default function Claims() {
       setShowForm(false);
       reset();
       clearBill();
-      fetchClaims();
+      await queryClient.invalidateQueries({ queryKey: ['claims'] });
     } catch (err: any) {
       alert(err?.response?.data?.error || 'Failed to submit claim');
     }
@@ -131,7 +125,7 @@ export default function Claims() {
     setActionLoading(id + '-' + action);
     try {
       await api.patch(`/claims/${id}/${action}`);
-      fetchClaims();
+      await queryClient.invalidateQueries({ queryKey: ['claims'] });
     } finally {
       setActionLoading(null);
     }
@@ -142,7 +136,7 @@ export default function Claims() {
     setActionLoading(id + '-withdraw');
     try {
       await api.delete(`/claims/${id}`);
-      fetchClaims();
+      await queryClient.invalidateQueries({ queryKey: ['claims'] });
     } catch (err: any) {
       alert(err?.response?.data?.error || 'Failed to withdraw claim');
     } finally {

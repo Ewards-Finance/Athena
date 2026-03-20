@@ -170,12 +170,16 @@ export function computePayslipEntry(params: {
     deductions['LWP Deduction'] = lwpDeduction;
   }
 
-  // WFH Deduction: 30% of daily gross for each approved TEMPORARY_WFH day
-  // Employee is present (LWP unaffected), but takes a 30% cut on those days.
+  // WFH Deduction: 30% of daily gross for each approved TEMPORARY_WFH day.
+  // If wfhDays is explicitly provided (initial run), recalculate fresh.
+  // If wfhDays is not passed (manual edit recompute), preserve the existing value
+  // so admin edits don't silently wipe WFH deductions already on the payslip.
   const wfhDeduction =
-    workingDays > 0 && wfhDays > 0
-      ? round2(fullGross * (wfhDays / workingDays) * WFH_DEDUCTION_RATE)
-      : 0;
+    params.wfhDays !== undefined
+      ? (workingDays > 0 && wfhDays > 0
+          ? round2(fullGross * (wfhDays / workingDays) * WFH_DEDUCTION_RATE)
+          : 0)
+      : (existingDeductions['WFH Deduction'] ?? 0);
   if (wfhDeduction > 0) {
     deductions['WFH Deduction'] = wfhDeduction;
   }

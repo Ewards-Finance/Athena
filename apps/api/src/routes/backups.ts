@@ -8,8 +8,7 @@
 
 import { Router, Response }  from 'express';
 import { AuthRequest, authenticate, authorize } from '../middleware/auth';
-import { PrismaClient }      from '@prisma/client';
-const prisma = new PrismaClient();
+import { prisma } from '../lib/prisma';
 import { runBackup, isBackupConfigured, getPgDumpStatus } from '../lib/backup';
 
 const router = Router();

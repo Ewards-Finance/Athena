@@ -25,11 +25,13 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// If we get a 401 (unauthorized), token is expired — clear auth and redirect to login
+// If we get a 401 (unauthorized), token is expired — clear auth and redirect to login.
+// Skip the redirect for the login endpoint itself so the login page can show the error.
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    const isLoginRequest = error.config?.url?.includes('/auth/login');
+    if (error.response?.status === 401 && !isLoginRequest) {
       localStorage.removeItem('athena_token');
       localStorage.removeItem('athena_user');
       window.location.href = '/login';

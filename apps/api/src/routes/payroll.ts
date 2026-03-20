@@ -26,7 +26,7 @@
  */
 
 import { Router, Response }          from 'express';
-import { PrismaClient }              from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { z }                         from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { computePayslipEntry, countWorkingDays, ComponentSnapshot, SATURDAY_FREE_OFF, UNLIMITED_LEAVE_TYPES } from '../lib/payrollEngine';
@@ -36,7 +36,6 @@ import { sendPayslipReadyEmail } from '../lib/email';
 const MONTH_NAMES = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
 
 const router = Router();
-const prisma = new PrismaClient();
 
 router.use(authenticate);
 

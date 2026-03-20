@@ -10,14 +10,13 @@
  */
 
 import { Router, Response }          from 'express';
-import { PrismaClient }              from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { z }                         from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { createNotifications, createNotification } from '../lib/notify';
 import { sendClaimStatusEmail } from '../lib/email';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 router.use(authenticate);
 

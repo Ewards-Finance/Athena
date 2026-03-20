@@ -17,12 +17,11 @@
  */
 
 import { Router, Response }   from 'express';
-import { PrismaClient }        from '@prisma/client';
+import { prisma } from '../lib/prisma';
 import { z }                   from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 
 const router = Router();
-const prisma = new PrismaClient();
 
 router.use(authenticate);
 
@@ -78,7 +77,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       update: { content, status: 'APPROVED', rejectedBy: null, rejectedAt: null, rejectionNote: null },
       create: { userId, date: dateObj, content, status: 'APPROVED' },
     });
-    return res.status(200).json(worklog);
+    return res.status(201).json(worklog);
   } catch (err) {
     console.error('POST /worklogs error:', err);
     return res.status(500).json({ error: 'Failed to save worklog' });

@@ -218,12 +218,7 @@ export default function Leaves() {
   // ── Leave actions ─────────────────────────────────────────────────────────
 
   const submitLeave = async (data: any, force = false) => {
-    const res = await api.post(`/leaves${force ? '?force=true' : ''}`, data);
-    if (res.data?.warning) {
-      setOverlapWarning(res.data.message);
-      setPendingData(data);
-      return;
-    }
+    await api.post(`/leaves${force ? '?force=true' : ''}`, data);
     setShowForm(false);
     setOverlapWarning(null);
     setPendingData(null);
@@ -235,7 +230,14 @@ export default function Leaves() {
 
   const onSubmit = async (data: LeaveFormData) => {
     try { await submitLeave(data, false); }
-    catch (err: any) { toast.error(err?.response?.data?.error || 'Failed to apply leave'); }
+    catch (err: any) {
+      if (err?.response?.status === 409 && err?.response?.data?.warning) {
+        setOverlapWarning(err.response.data.message);
+        setPendingData(data);
+        return;
+      }
+      toast.error(err?.response?.data?.error || 'Failed to apply leave');
+    }
   };
 
   const confirmOverlap = async () => {

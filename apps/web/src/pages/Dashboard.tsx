@@ -3,9 +3,10 @@
  * Notice Board, Quick Actions, and My Team. No stats clutter.
  */
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Users, CalendarOff, Receipt, Megaphone, TrendingUp, Plus, Trash2, Loader2, Clock } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge }   from '@/components/ui/badge';
@@ -43,9 +44,7 @@ interface TeamInfo {
 
 export default function Dashboard() {
   const { user }                = useAuth();
-  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
-  const [team, setTeam]         = useState<TeamInfo | null>(null);
-  const [loading, setLoading]   = useState(true);
+  const queryClient             = useQueryClient();
 
   // Announcement management (admin only)
   const [showAdd, setShowAdd]   = useState(false);
@@ -56,26 +55,26 @@ export default function Dashboard() {
 
   const isAdmin = user?.role === 'ADMIN';
 
-  useEffect(() => {
-    Promise.all([
-      api.get<DashboardData>('/dashboard/stats'),
-      api.get<TeamInfo>('/dashboard/team'),
-    ])
-      .then(([statsRes, teamRes]) => {
-        setAnnouncements(statsRes.data.announcements ?? []);
-        setTeam(teamRes.data);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  const statsQuery = useQuery({
+    queryKey: ['dashboard-stats'],
+    queryFn: () => api.get<DashboardData>('/dashboard/stats').then((r) => r.data),
+  });
+
+  const teamQuery = useQuery({
+    queryKey: ['dashboard-team'],
+    queryFn: () => api.get<TeamInfo>('/dashboard/team').then((r) => r.data),
+  });
+
+  const announcements = statsQuery.data?.announcements ?? [];
+  const team          = teamQuery.data ?? null;
+  const loading       = statsQuery.isLoading || teamQuery.isLoading;
 
   const handlePost = async () => {
     if (!newTitle.trim() || !newBody.trim()) return;
     setSubmitting(true);
     try {
       await api.post('/announcements', { title: newTitle.trim(), body: newBody.trim() });
-      const { data } = await api.get<DashboardData>('/dashboard/stats');
-      setAnnouncements(data.announcements ?? []);
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
       setNewTitle('');
       setNewBody('');
       setShowAdd(false);
@@ -91,7 +90,7 @@ export default function Dashboard() {
     setDeletingId(id);
     try {
       await api.delete(`/announcements/${id}`);
-      setAnnouncements((prev) => prev.filter((a) => a.id !== id));
+      await queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
       toast.success('Announcement removed');
     } catch (err: any) {
       toast.error(err?.response?.data?.error || 'Failed to remove');
