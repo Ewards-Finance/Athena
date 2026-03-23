@@ -177,6 +177,10 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER', 'OWNER']), async (re
       res.status(400).json({ error: `Cannot approve a comp-off that is ${compoff.status}` });
       return;
     }
+    if (compoff.userId === req.user!.id) {
+      res.status(403).json({ error: 'You cannot approve your own comp-off request' });
+      return;
+    }
 
     const updated = await prisma.compOff.update({
       where: { id: req.params.id },
@@ -211,6 +215,10 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER', 'OWNER']), async (req
     }
     if (compoff.status !== 'PENDING') {
       res.status(400).json({ error: `Cannot reject a comp-off that is ${compoff.status}` });
+      return;
+    }
+    if (compoff.userId === req.user!.id) {
+      res.status(403).json({ error: 'You cannot reject your own comp-off request' });
       return;
     }
 

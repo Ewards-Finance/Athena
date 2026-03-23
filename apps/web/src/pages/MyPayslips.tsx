@@ -22,6 +22,8 @@ interface PayslipEntry {
   grossPay:       number;
   totalDeductions:number;
   netPay:         number;
+  arrearsAmount?: number | null;
+  arrearsNote?:   string | null;
   payrollRun: {
     month:  number;
     year:   number;
@@ -175,6 +177,19 @@ export default function MyPayslips() {
                               <span className="text-gray-600">Approved Claims</span>
                               <span className="font-medium text-green-600">+₹{fmt(slip.reimbursements)}</span>
                             </div>
+                          </div>
+                        )}
+
+                        {/* Arrears */}
+                        {(slip.arrearsAmount ?? 0) > 0 && (
+                          <div className="mt-4 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                            <div className="flex justify-between text-sm">
+                              <span className="text-amber-700 font-medium">Arrears</span>
+                              <span className="font-bold text-amber-700">+₹{fmt(slip.arrearsAmount!)}</span>
+                            </div>
+                            {slip.arrearsNote && (
+                              <p className="text-xs text-amber-600 mt-1">{slip.arrearsNote}</p>
+                            )}
                           </div>
                         )}
 

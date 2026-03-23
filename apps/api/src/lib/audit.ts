@@ -18,6 +18,8 @@ interface AuditPayload {
   subjectMeta?: Record<string, any>;
   oldValues?: Record<string, any>;
   newValues?: Record<string, any>;
+  reason?: string;
+  changeSource?: string;   // 'WEB' | 'IMPORT' | 'API' | 'WHATSAPP'
 }
 
 export async function createAuditLog(payload: AuditPayload): Promise<void> {
@@ -34,6 +36,8 @@ export async function createAuditLog(payload: AuditPayload): Promise<void> {
         subjectMeta:   payload.subjectMeta ?? undefined,
         oldValues: payload.oldValues ?? undefined,
         newValues: payload.newValues ?? undefined,
+        reason: payload.reason ?? undefined,
+        changeSource: payload.changeSource ?? undefined,
       },
     });
   } catch (err) {

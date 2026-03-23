@@ -35,6 +35,8 @@ import {
   Landmark,
   CalendarPlus,
   MapPin,
+  TrendingUp,
+  LifeBuoy,
 } from 'lucide-react';
 import { useAuth }            from '@/hooks/useAuth';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -48,6 +50,12 @@ const navItems = [
     to:    '/dashboard',
     icon:  Home,
     roles: ['OWNER', 'ADMIN', 'MANAGER', 'EMPLOYEE'] as const,
+  },
+  {
+    label: 'Founder View',
+    to:    '/founder',
+    icon:  TrendingUp,
+    roles: ['OWNER'] as const,
   },
   {
     label: 'My Profile',
@@ -80,7 +88,7 @@ const navItems = [
     roles: ['OWNER', 'ADMIN', 'MANAGER', 'EMPLOYEE'] as const,
   },
   {
-    label: 'Travel Proof',
+    label: 'Travelling',
     to:    '/travel-proof',
     icon:  MapPin,
     roles: ['OWNER', 'ADMIN', 'MANAGER', 'EMPLOYEE'] as const,
@@ -149,6 +157,12 @@ const navItems = [
     label: 'Search',
     to:    '/search',
     icon:  Search,
+    roles: ['OWNER', 'ADMIN', 'MANAGER', 'EMPLOYEE'] as const,
+  },
+  {
+    label: 'Helpdesk',
+    to:    '/helpdesk',
+    icon:  LifeBuoy,
     roles: ['OWNER', 'ADMIN', 'MANAGER', 'EMPLOYEE'] as const,
   },
   {

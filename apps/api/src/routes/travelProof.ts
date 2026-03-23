@@ -35,11 +35,13 @@ const proofSchema = z.object({
 router.get('/today', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.user!.id;
-    const today  = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayEnd = new Date(today);
-    todayEnd.setHours(23, 59, 59, 999);
+
+    // todayStr is the IST calendar date (e.g. "2026-03-23")
     const todayStr = localDateStr();
+
+    // Use UTC midnight to match how POST stores proofDate (new Date("YYYY-MM-DD") = UTC midnight)
+    const todayUTC    = new Date(todayStr + 'T00:00:00.000Z');
+    const todayEndUTC = new Date(todayStr + 'T23:59:59.999Z');
 
     // Find a TRAVELLING leave that covers today (PENDING or APPROVED — not REJECTED/CANCELLED)
     const leave = await prisma.leaveRequest.findFirst({
@@ -47,8 +49,8 @@ router.get('/today', async (req: AuthRequest, res: Response) => {
         employeeId: userId,
         leaveType:  'TRAVELLING',
         status:     { in: ['PENDING', 'APPROVED'] },
-        startDate:  { lte: todayEnd },
-        endDate:    { gte: today },
+        startDate:  { lte: todayEndUTC },
+        endDate:    { gte: todayUTC },
       },
     });
 
@@ -57,9 +59,9 @@ router.get('/today', async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    // Check if proof already submitted for today
+    // Check if proof already submitted for today — use UTC midnight to match stored proofDate
     const existing = await prisma.travelProof.findUnique({
-      where: { leaveRequestId_proofDate: { leaveRequestId: leave.id, proofDate: today } },
+      where: { leaveRequestId_proofDate: { leaveRequestId: leave.id, proofDate: todayUTC } },
     });
 
     res.json({
@@ -216,7 +218,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
         type:   'TRAVEL_PROOF_SUBMITTED',
         title:  'Travel Proof Submitted',
         message: `${empName} has submitted travel proof for ${dateStr}.`,
-        link:   '/attendance',
+        link:   '/travel-proof',
       });
     }
 

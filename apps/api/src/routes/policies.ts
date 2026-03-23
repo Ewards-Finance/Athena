@@ -9,6 +9,7 @@ import { Router, Response } from 'express';
 import { AuthRequest, authenticate, authorize } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { createNotification } from '../lib/notify';
+import { createAuditLog } from '../lib/audit';
 
 const router = Router();
 router.use(authenticate);
@@ -61,6 +62,22 @@ router.get('/active', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// GET /api/policies/my-pending — check if current user has a pending policy acknowledgement
+router.get('/my-pending', async (req: AuthRequest, res: Response) => {
+  try {
+    const user = req.user!;
+    const pending = await prisma.policyAcknowledgement.findFirst({
+      where: { userId: user.id, isAcknowledged: false },
+      include: {
+        policyVersion: { select: { id: true, name: true, versionCode: true, notes: true } },
+      },
+    });
+    res.json(pending);
+  } catch {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // GET /api/policies/acknowledgements — list pending acknowledgements
 router.get('/acknowledgements', authorize(['OWNER', 'ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
@@ -80,6 +97,45 @@ router.get('/acknowledgements', authorize(['OWNER', 'ADMIN']), async (req: AuthR
     });
 
     res.json(acks);
+  } catch {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/policies/acknowledge — employee acknowledges current policy
+// IMPORTANT: Must be before /:id routes to avoid parameter collision
+router.post('/acknowledge', async (req: AuthRequest, res: Response) => {
+  try {
+    const user = req.user!;
+
+    // Find the active policy version
+    const active = await prisma.policyVersion.findFirst({ where: { isActive: true } });
+    if (!active) {
+      res.status(404).json({ error: 'No active policy to acknowledge' });
+      return;
+    }
+
+    // Upsert the acknowledgement
+    const ack = await prisma.policyAcknowledgement.upsert({
+      where: {
+        policyVersionId_userId: {
+          policyVersionId: active.id,
+          userId: user.id,
+        },
+      },
+      update: {
+        isAcknowledged: true,
+        acknowledgedAt: new Date(),
+      },
+      create: {
+        policyVersionId: active.id,
+        userId: user.id,
+        isAcknowledged: true,
+        acknowledgedAt: new Date(),
+      },
+    });
+
+    res.json(ack);
   } catch {
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -331,10 +387,19 @@ router.patch('/:id/publish', authorize(['OWNER']), async (req: AuthRequest, res:
             type: 'POLICY_PUBLISHED',
             title: 'New Policy Version Published',
             message: `Policy "${version.name}" has been published. Please review and acknowledge.`,
-            link: '/policies',
+            link: '/dashboard',
           });
         }
       }
+    });
+
+    await createAuditLog({
+      actorId: user.id,
+      action: 'POLICY_PUBLISHED',
+      entity: 'PolicyVersion',
+      entityId: version.id,
+      newValues: { name: version.name, versionCode: version.versionCode },
+      changeSource: 'WEB',
     });
 
     const published = await prisma.policyVersion.findUnique({
@@ -348,39 +413,28 @@ router.patch('/:id/publish', authorize(['OWNER']), async (req: AuthRequest, res:
   }
 });
 
-// POST /api/policies/acknowledge — employee acknowledges current policy
-router.post('/acknowledge', async (req: AuthRequest, res: Response) => {
+// POST /api/policies/:id/remind — send ack reminders to unacknowledged users (OWNER only)
+router.post('/:id/remind', authorize(['OWNER']), async (req: AuthRequest, res: Response) => {
   try {
-    const user = req.user!;
+    const version = await prisma.policyVersion.findUnique({ where: { id: req.params.id } });
+    if (!version) { res.status(404).json({ error: 'Policy version not found' }); return; }
 
-    // Find the active policy version
-    const active = await prisma.policyVersion.findFirst({ where: { isActive: true } });
-    if (!active) {
-      res.status(404).json({ error: 'No active policy to acknowledge' });
-      return;
-    }
-
-    // Upsert the acknowledgement
-    const ack = await prisma.policyAcknowledgement.upsert({
-      where: {
-        policyVersionId_userId: {
-          policyVersionId: active.id,
-          userId: user.id,
-        },
-      },
-      update: {
-        isAcknowledged: true,
-        acknowledgedAt: new Date(),
-      },
-      create: {
-        policyVersionId: active.id,
-        userId: user.id,
-        isAcknowledged: true,
-        acknowledgedAt: new Date(),
-      },
+    const pending = await prisma.policyAcknowledgement.findMany({
+      where: { policyVersionId: version.id, isAcknowledged: false },
+      select: { userId: true },
     });
 
-    res.json(ack);
+    for (const ack of pending) {
+      await createNotification({
+        userId: ack.userId,
+        type: 'POLICY_ACK_REMINDER',
+        title: 'Policy Acknowledgement Reminder',
+        message: `Please acknowledge the policy "${version.name}". This is a reminder from HR.`,
+        link: '/dashboard',
+      });
+    }
+
+    res.json({ message: `Reminder sent to ${pending.length} employee(s)` });
   } catch {
     res.status(500).json({ error: 'Internal server error' });
   }

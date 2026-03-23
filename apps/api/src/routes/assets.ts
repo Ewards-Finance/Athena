@@ -117,6 +117,7 @@ router.post('/', authorize(['ADMIN', 'OWNER']), async (req: AuthRequest, res: Re
       entity: 'Asset',
       entityId: asset.id,
       newValues: { name, assetTag, category },
+      changeSource: 'WEB',
     });
 
     res.status(201).json(asset);
@@ -227,6 +228,7 @@ router.post('/:id/assign', authorize(['ADMIN', 'OWNER']), async (req: AuthReques
       subjectEntity: 'User',
       subjectId: userId,
       newValues: { assetTag: asset.assetTag, conditionOut },
+      changeSource: 'WEB',
     });
 
     res.status(201).json(assignment);
@@ -278,6 +280,7 @@ router.patch('/:id/return', authorize(['ADMIN', 'OWNER']), async (req: AuthReque
       subjectEntity: 'User',
       subjectId: activeAssignment.userId,
       newValues: { assetTag: asset.assetTag, conditionIn },
+      changeSource: 'WEB',
     });
 
     const updatedAsset = await prisma.asset.findUnique({

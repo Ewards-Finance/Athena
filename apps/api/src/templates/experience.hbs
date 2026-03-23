@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: 'Arial', sans-serif; font-size: 13px; color: #222; line-height: 1.7; }
+  .letterhead { text-align: center; border-bottom: 3px solid #361963; padding-bottom: 16px; margin-bottom: 30px; }
+  .company-name { font-size: 22px; font-weight: bold; color: #361963; margin-bottom: 4px; }
+  .company-address { font-size: 11px; color: #666; }
+  .ref-line { font-size: 11px; color: #888; margin-bottom: 20px; }
+  .subject { font-weight: bold; text-align: center; margin: 20px 0; font-size: 15px; text-decoration: underline; }
+  .content p { margin-bottom: 12px; text-align: justify; }
+  .signature { margin-top: 60px; }
+  .signature-line { border-top: 1px solid #333; width: 200px; margin-top: 50px; }
+</style>
+</head>
+<body>
+  <div class="letterhead">
+    <div class="company-name">{{companyLegalName}}</div>
+    <div class="company-address">{{companyAddress}}</div>
+  </div>
+
+  <div class="ref-line">Date: {{today}} &nbsp;|&nbsp; Ref: EXP/{{employeeCode}}/{{currentYear}}</div>
+
+  <div class="subject">TO WHOMSOEVER IT MAY CONCERN</div>
+
+  <div class="subject">EXPERIENCE CERTIFICATE</div>
+
+  <div class="content">
+    <p>This is to certify that <strong>{{firstName}} {{lastName}}</strong> (Employee Code: {{employeeCode}}) was employed with <strong>{{companyLegalName}}</strong> from <strong>{{formatDate dateOfJoining}}</strong> to <strong>{{formatDate lastWorkingDate}}</strong>.</p>
+
+    <p>During the tenure, {{firstName}} held the position of <strong>{{designation}}</strong> in the <strong>{{department}}</strong> department.</p>
+
+    <p>{{firstName}} was found to be sincere, hardworking, and dedicated during the period of employment. We found the conduct and performance to be satisfactory.</p>
+
+    <p>We wish {{firstName}} all the best in future endeavors.</p>
+
+    <p>This certificate is issued on request for whatever purpose it may serve.</p>
+  </div>
+
+  <div class="signature">
+    <p>For <strong>{{companyLegalName}}</strong></p>
+    <div class="signature-line"></div>
+    <p>Authorized Signatory</p>
+    <p>HR Department</p>
+  </div>
+</body>
+</html>

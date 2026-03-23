@@ -21,6 +21,7 @@ import { getFYYear }                from '../lib/fyUtils';
 import { sendLeaveApprovedEmail, sendLeaveRejectedEmail } from '../lib/email';
 import { UNLIMITED_LEAVE_TYPES } from '../lib/payrollEngine';
 import { getBooleanRule } from '../lib/policyEngine';
+import { isDelegateForEmployee } from '../lib/delegation';
 
 const router = Router();
 
@@ -218,8 +219,8 @@ router.get('/pending', authorize(['ADMIN', 'MANAGER']), async (_req, res: Respon
   }
 });
 
-// POST /api/leaves - Employee submits a leave application
-router.post('/', authorize(['EMPLOYEE', 'MANAGER']), async (req: AuthRequest, res: Response) => {
+// POST /api/leaves - Employee/Manager/Admin/Owner submits a leave application
+router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (req: AuthRequest, res: Response) => {
   const parsed = applyLeaveSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
@@ -358,7 +359,7 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER']), async (req: AuthRequest, re
         type:    'LEAVE_APPLIED',
         title:   'New Leave Request',
         message: `${empName} has applied for ${leaveType} leave (${daysStr}).`,
-        link:    '/leaves',
+        link:    leaveType === 'TRAVELLING' ? '/travel-proof' : '/leaves',
       });
     }
 
@@ -413,6 +414,12 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
     if (submitter?.role === 'ADMIN' && req.user!.role !== 'ADMIN') {
       res.status(403).json({ error: 'Only an Admin can approve another Admin\'s leave request' });
       return;
+    }
+
+    // Check if this approval is via delegation (for audit trail)
+    let approvedViaDelegate = false;
+    if (req.user!.role === 'MANAGER') {
+      approvedViaDelegate = await isDelegateForEmployee(req.user!.id, leave.employeeId);
     }
 
     const year = getFYYear(new Date(leave.startDate));
@@ -509,7 +516,8 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
         endDate: leave.endDate,
       },
       oldValues: { status: 'PENDING' },
-      newValues: { status: 'APPROVED', comment: comment || 'Approved' },
+      newValues: { status: 'APPROVED', comment: comment || 'Approved', ...(approvedViaDelegate ? { approvedViaDelegate: true } : {}) },
+      changeSource: 'WEB',
     });
 
     // Notify the employee their leave was approved
@@ -631,6 +639,7 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
       },
       oldValues: { status: 'PENDING' },
       newValues: { status: 'REJECTED', comment: comment || 'Rejected' },
+      changeSource: 'WEB',
     });
 
     res.json(updated);

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: 'Arial', sans-serif; font-size: 13px; color: #222; line-height: 1.7; }
+  .letterhead { text-align: center; border-bottom: 3px solid #361963; padding-bottom: 16px; margin-bottom: 30px; }
+  .company-name { font-size: 22px; font-weight: bold; color: #361963; margin-bottom: 4px; }
+  .company-address { font-size: 11px; color: #666; }
+  .ref-line { font-size: 11px; color: #888; margin-bottom: 20px; }
+  .subject { font-weight: bold; text-align: center; margin: 20px 0; font-size: 15px; text-decoration: underline; }
+  .content p { margin-bottom: 12px; text-align: justify; }
+  .signature { margin-top: 60px; }
+  .signature-line { border-top: 1px solid #333; width: 200px; margin-top: 50px; }
+  table.details { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  table.details td { padding: 6px 12px; border: 1px solid #ddd; }
+  table.details td:first-child { font-weight: bold; width: 40%; background: #f9f9f9; }
+</style>
+</head>
+<body>
+  <div class="letterhead">
+    <div class="company-name">{{companyLegalName}}</div>
+    <div class="company-address">{{companyAddress}}</div>
+  </div>
+
+  <div class="ref-line">Date: {{today}}</div>
+
+  <p>Dear <strong>{{firstName}} {{lastName}}</strong>,</p>
+  <p>Employee Code: {{employeeCode}}</p>
+
+  <div class="subject">INTER-COMPANY TRANSFER LETTER</div>
+
+  <div class="content">
+    <p>This is to inform you that you are being transferred from <strong>{{fromCompany}}</strong> to <strong>{{toCompany}}</strong>, effective <strong>{{formatDate effectiveDate}}</strong>.</p>
+
+    <table class="details">
+      <tr><td>From Company</td><td>{{fromCompany}}</td></tr>
+      <tr><td>To Company</td><td>{{toCompany}}</td></tr>
+      <tr><td>Effective Date</td><td>{{formatDate effectiveDate}}</td></tr>
+      {{#if newDesignation}}<tr><td>New Designation</td><td>{{newDesignation}}</td></tr>{{/if}}
+      {{#if newDepartment}}<tr><td>New Department</td><td>{{newDepartment}}</td></tr>{{/if}}
+      {{#if newCTC}}<tr><td>Revised Annual CTC</td><td>{{formatCurrency newCTC}}</td></tr>{{/if}}
+    </table>
+
+    <p>Your leave balances, tenure, and benefits will be carried forward to the new entity. All other terms and conditions of your employment remain unchanged unless specified above.</p>
+
+    {{#if transferNotes}}<p><strong>Notes:</strong> {{transferNotes}}</p>{{/if}}
+
+    <p>We wish you the best in your new role.</p>
+  </div>
+
+  <div class="signature">
+    <p>For <strong>{{companyLegalName}}</strong></p>
+    <div class="signature-line"></div>
+    <p>Authorized Signatory</p>
+  </div>
+</body>
+</html>

@@ -15,6 +15,7 @@ import multer                        from 'multer';
 import ExcelJS                       from 'exceljs';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { createAuditLog }            from '../lib/audit';
+import { maskSensitiveFields }      from '../lib/mask';
 
 const xlsxUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single('file');
 
@@ -196,7 +197,11 @@ router.get('/:id([a-z0-9]+)', async (req: AuthRequest, res: Response) => {
       });
     }
 
-    res.json({ ...user, reportsTo });
+    // Mask sensitive fields for MANAGER viewing someone else's profile
+    const canSeeAll = requestingUser.id === id || requestingUser.role === 'ADMIN' || requestingUser.role === 'OWNER';
+    const maskedProfile = maskSensitiveFields(user.profile, canSeeAll);
+
+    res.json({ ...user, profile: maskedProfile, reportsTo });
   } catch (err) {
     console.error('Get employee error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -377,6 +382,7 @@ router.put('/:id([a-z0-9]+)', async (req: AuthRequest, res: Response) => {
             ? { employeeId: subjectProfile.employeeId }
             : undefined,
           newValues: changes,
+          changeSource: 'WEB',
         });
       }
 
@@ -446,6 +452,7 @@ router.patch('/:id([a-z0-9]+)/status', authorize(['ADMIN']), async (req: AuthReq
         : undefined,
       oldValues: { employmentStatus: current.employmentStatus },
       newValues: { employmentStatus: parsed.data.employmentStatus },
+      changeSource: 'WEB',
     });
 
     res.json(updated);
@@ -492,6 +499,7 @@ router.delete('/:id([a-z0-9]+)', authorize(['ADMIN']), async (req: AuthRequest, 
         ? { employeeId: subject.profile.employeeId }
         : undefined,
       newValues: { isActive: false },
+      changeSource: 'WEB',
     });
 
     res.json({ message: 'Employee deactivated successfully' });

@@ -28,6 +28,7 @@ const DEFAULTS: Record<string, string> = {
   late_warning_threshold:    '3',
   probation_duration_months: '6',
   notice_period_days:        '30',
+  loan_interest_rate:        '9',
 };
 
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -35,6 +36,11 @@ const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 function validateSetting(key: string, value: string): string | null {
   if (key === 'extension_arrival_time' || key === 'half_day_cutoff_time') {
     return TIME_RE.test(value) ? null : `${key} must be a valid 24-hour time (HH:MM)`;
+  }
+
+  if (key === 'loan_interest_rate') {
+    const rate = Number(value);
+    return !isNaN(rate) && rate >= 0 && rate <= 36 ? null : `${key} must be a number between 0 and 36`;
   }
 
   const num = Number(value);

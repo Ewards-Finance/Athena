@@ -173,7 +173,7 @@ export default function CompOff() {
                 <Button type="submit" disabled={submitting} size="sm">
                   {submitting && <Loader2 className="h-4 w-4 mr-1 animate-spin" />} Submit
                 </Button>
-                <Button type="button" variant="outline" size="sm" onClick={() => { setShowForm(false); form.reset(); }}>Cancel</Button>
+                <Button type="button" variant="outline" size="sm" disabled={submitting} onClick={() => { setShowForm(false); form.reset(); }}>Cancel</Button>
               </div>
             </form>
           </CardContent>

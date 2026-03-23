@@ -43,6 +43,9 @@ model User {
   loanRequests         LoanRequest[]
   compOffs             CompOff[]
   travelProofs         TravelProof[]
+  serviceRequests      ServiceRequest[]
+  delegationsGiven     DelegateApprover[] @relation("Delegator")
+  delegationsReceived  DelegateApprover[] @relation("Delegate")
 }
 
 model Profile {
@@ -204,7 +207,7 @@ model PayrollRun {
   updatedAt       DateTime        @updatedAt
   entries         PayslipEntry[]
 
-  @@unique([month, year, companyId])
+  @@unique([month, year, companyId, runType])
 }
 
 model PayslipEntry {
@@ -769,7 +772,8 @@ model LoanRequest {
   user             User       @relation(fields: [userId], references: [id])
   amount           Float
   installments     Int        // number of months for deduction
-  monthlyEMI       Float      // computed: amount / installments
+  monthlyEMI       Float      // computed via reducing-balance EMI formula
+  interestRate     Float      @default(9.0)  // annual % rate at time of approval
   reason           String
   status           LoanStatus @default(PENDING)
   approvedBy       String?
@@ -830,4 +834,53 @@ model TravelProof {
   createdAt       DateTime     @default(now())
 
   @@unique([leaveRequestId, proofDate])
+}
+
+// ─── V3.1 Sprint 5: Service Desk ────────────────────────────────────────────
+
+model ServiceRequest {
+  id          String                 @id @default(cuid())
+  userId      String
+  user        User                   @relation(fields: [userId], references: [id])
+  category    ServiceRequestCategory
+  subject     String
+  description String
+  status      ServiceRequestStatus   @default(OPEN)
+  assignedTo  String?                // HR admin userId
+  resolvedAt  DateTime?
+  resolution  String?
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+}
+
+enum ServiceRequestCategory {
+  SALARY_ISSUE
+  ATTENDANCE_CORRECTION
+  DOCUMENT_REQUEST
+  REIMBURSEMENT_ISSUE
+  LEAVE_CORRECTION
+  LETTER_REQUEST
+  IT_SUPPORT
+  OTHER
+}
+
+enum ServiceRequestStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+// ─── V3.1 Sprint 5: Delegate Approver ───────────────────────────────────────
+
+model DelegateApprover {
+  id           String   @id @default(cuid())
+  delegatorId  String
+  delegator    User     @relation("Delegator", fields: [delegatorId], references: [id])
+  delegateId   String
+  delegate     User     @relation("Delegate", fields: [delegateId], references: [id])
+  fromDate     DateTime
+  toDate       DateTime
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
 }

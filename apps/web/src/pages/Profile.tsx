@@ -15,7 +15,7 @@ import { Button }  from '@/components/ui/button';
 import { Input }   from '@/components/ui/input';
 import { Label }   from '@/components/ui/label';
 import { Badge }   from '@/components/ui/badge';
-import { Loader2, Save, User, Briefcase, CreditCard, Building, FileText, Upload, ExternalLink, KeyRound, CalendarPlus, Landmark } from 'lucide-react';
+import { Loader2, Save, User, Briefcase, CreditCard, Building, FileText, Upload, ExternalLink, KeyRound, CalendarPlus, Landmark, FileDown } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 
 // PAN format: 5 uppercase letters + 4 digits + 1 uppercase letter
@@ -105,6 +105,13 @@ export default function Profile() {
   const [changingPwd, setChangingPwd]           = useState(false);
   const [pwdSuccess, setPwdSuccess]             = useState('');
   const [pwdError, setPwdError]                 = useState('');
+
+  // Letter generation state
+  const [showLetterModal, setShowLetterModal]   = useState(false);
+  const [letterType, setLetterType]             = useState('');
+  const [letterTypes, setLetterTypes]           = useState<{key: string; label: string}[]>([]);
+  const [generatingLetter, setGeneratingLetter] = useState(false);
+  const [letterAdditional, setLetterAdditional] = useState<Record<string, string>>({});
 
   // Document upload state
   const [uploadingKyc, setUploadingKyc]         = useState(false);
@@ -207,6 +214,40 @@ export default function Profile() {
     }
   };
 
+  const openLetterModal = async () => {
+    setShowLetterModal(true);
+    setLetterType('');
+    setLetterAdditional({});
+    try {
+      const { data } = await api.get('/letters/templates');
+      setLetterTypes(data);
+    } catch {
+      setLetterTypes([]);
+    }
+  };
+
+  const handleGenerateLetter = async () => {
+    if (!letterType || !user?.id) return;
+    setGeneratingLetter(true);
+    try {
+      const res = await api.post('/letters/generate',
+        { userId: user.id, type: letterType, additionalData: letterAdditional },
+        { responseType: 'blob' },
+      );
+      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${letterType.toLowerCase()}_${profile?.firstName?.toLowerCase() || 'letter'}.pdf`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+      setShowLetterModal(false);
+    } catch {
+      alert('Failed to generate letter. Puppeteer may not be available.');
+    } finally {
+      setGeneratingLetter(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -223,9 +264,17 @@ export default function Profile() {
           <h1 className="text-2xl font-bold tracking-tight">My Profile</h1>
           <p className="text-muted-foreground text-sm">Manage your personal and statutory information</p>
         </div>
-        <Badge variant="outline" className="font-mono">
-          {profile?.employeeId}
-        </Badge>
+        <div className="flex items-center gap-3">
+          {(user?.role === 'ADMIN' || user?.role === 'OWNER') && (
+            <Button size="sm" variant="outline" onClick={openLetterModal}>
+              <FileDown className="h-4 w-4 mr-1" />
+              Generate Letter
+            </Button>
+          )}
+          <Badge variant="outline" className="font-mono">
+            {profile?.employeeId}
+          </Badge>
+        </div>
       </div>
 
       {/* Personal Details - read only (changed by Admin only) */}
@@ -571,6 +620,97 @@ export default function Profile() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Letter Generation Modal */}
+      {showLetterModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-lg shadow-lg w-full max-w-md p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold">Generate Letter</h3>
+              <button onClick={() => setShowLetterModal(false)} className="text-gray-400 hover:text-gray-600">
+                <span className="text-xl">&times;</span>
+              </button>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>Letter Type</Label>
+              <select
+                value={letterType}
+                onChange={(e) => { setLetterType(e.target.value); setLetterAdditional({}); }}
+                className="w-full border rounded-md px-3 py-2 text-sm"
+              >
+                <option value="">Select a letter type...</option>
+                {letterTypes.map((t) => (
+                  <option key={t.key} value={t.key}>{t.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Additional fields based on letter type */}
+            {letterType === 'INCREMENT' && (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label>New Annual CTC</Label>
+                  <Input type="number" placeholder="e.g. 800000" onChange={(e) => setLetterAdditional((prev) => ({ ...prev, newCtc: e.target.value, incrementAmount: String(Number(e.target.value) - (profile?.annualCtc || 0)), incrementPercentage: String(Math.round(((Number(e.target.value) - (profile?.annualCtc || 0)) / (profile?.annualCtc || 1)) * 100)), newMonthly: String(Math.round(Number(e.target.value) / 12)) }))} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Effective Date</Label>
+                  <Input type="date" onChange={(e) => setLetterAdditional((prev) => ({ ...prev, effectiveDate: e.target.value }))} />
+                </div>
+              </div>
+            )}
+
+            {letterType === 'WARNING' && (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label>Warning Reason</Label>
+                  <Input placeholder="Reason for warning" onChange={(e) => setLetterAdditional((prev) => ({ ...prev, warningReason: e.target.value }))} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Details (optional)</Label>
+                  <textarea placeholder="Additional details..." className="w-full border rounded-md px-3 py-2 text-sm min-h-[60px]" onChange={(e) => setLetterAdditional((prev) => ({ ...prev, warningDetails: e.target.value }))} />
+                </div>
+              </div>
+            )}
+
+            {letterType === 'TRANSFER' && (
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <Label>From Company</Label>
+                  <Input placeholder="Current company" onChange={(e) => setLetterAdditional((prev) => ({ ...prev, fromCompany: e.target.value }))} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>To Company</Label>
+                  <Input placeholder="New company" onChange={(e) => setLetterAdditional((prev) => ({ ...prev, toCompany: e.target.value }))} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Effective Date</Label>
+                  <Input type="date" onChange={(e) => setLetterAdditional((prev) => ({ ...prev, effectiveDate: e.target.value }))} />
+                </div>
+              </div>
+            )}
+
+            {letterType === 'PROBATION_CONFIRMATION' && (
+              <div className="space-y-1.5">
+                <Label>Confirmation Date</Label>
+                <Input type="date" onChange={(e) => setLetterAdditional((prev) => ({ ...prev, confirmationDate: e.target.value }))} />
+              </div>
+            )}
+
+            <div className="flex gap-2 justify-end pt-2">
+              <Button variant="outline" onClick={() => setShowLetterModal(false)}>Cancel</Button>
+              <Button
+                onClick={handleGenerateLetter}
+                disabled={!letterType || generatingLetter}
+                style={{ backgroundColor: '#361963' }}
+              >
+                {generatingLetter ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <FileDown className="h-4 w-4 mr-2" />}
+                {generatingLetter ? 'Generating...' : 'Generate & Download'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

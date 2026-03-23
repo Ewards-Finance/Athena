@@ -692,6 +692,7 @@ router.put('/records/:id', authorize(['ADMIN']), async (req: AuthRequest, res: R
       },
       oldValues: { checkInManual: record.checkInManual },
       newValues: { checkInManual: parsed.data.checkInManual },
+      changeSource: 'WEB',
     });
 
     res.json(updated);
@@ -1236,11 +1237,95 @@ router.post('/import/rollback/:batchId', authorize(['ADMIN']), async (req: AuthR
       action: 'ATTENDANCE_IMPORT_ROLLED_BACK',
       entity: 'ImportBatch',
       entityId: batch.id,
+      changeSource: 'WEB',
     });
 
     res.json({ message: 'Import rolled back successfully' });
   } catch (err) {
     console.error('Import rollback error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ─── Attendance Adjustments ───────────────────────────────────────────────────
+
+// GET /api/attendance/adjustments?month=&year= — Admin sees all, employee sees own
+router.get('/adjustments', async (req: AuthRequest, res: Response) => {
+  try {
+    const user  = req.user!;
+    const month = req.query.month ? parseInt(req.query.month as string) : undefined;
+    const year  = req.query.year  ? parseInt(req.query.year  as string) : undefined;
+
+    const where: any = {};
+    if (user.role === 'EMPLOYEE') where.userId = user.id;
+    if (month) where.month = month;
+    if (year)  where.year  = year;
+
+    const adjustments = await prisma.attendanceAdjustment.findMany({
+      where,
+      include: {
+        user: {
+          select: {
+            email: true,
+            profile: { select: { firstName: true, lastName: true, employeeId: true, department: true } },
+          },
+        },
+      },
+      orderBy: [{ year: 'desc' }, { month: 'desc' }],
+    });
+
+    res.json(adjustments);
+  } catch (err) {
+    console.error('List adjustments error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/attendance/adjustments — Admin creates/upserts adjustment
+router.post('/adjustments', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const actor = req.user!;
+    const { userId, month, year, adjustmentDays, reason } = req.body;
+
+    if (!userId || !month || !year || adjustmentDays === undefined) {
+      res.status(400).json({ error: 'userId, month, year, and adjustmentDays are required' });
+      return;
+    }
+
+    const employee = await prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+    if (!employee) { res.status(404).json({ error: 'Employee not found' }); return; }
+
+    const adjustment = await prisma.attendanceAdjustment.upsert({
+      where:  { userId_month_year: { userId, month: parseInt(month), year: parseInt(year) } },
+      create: { userId, month: parseInt(month), year: parseInt(year), adjustmentDays: parseFloat(adjustmentDays), reason: reason || null, createdBy: actor.id },
+      update: { adjustmentDays: parseFloat(adjustmentDays), reason: reason || null },
+      include: {
+        user: {
+          select: {
+            email: true,
+            profile: { select: { firstName: true, lastName: true, employeeId: true } },
+          },
+        },
+      },
+    });
+
+    res.status(201).json(adjustment);
+  } catch (err) {
+    console.error('Create adjustment error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// DELETE /api/attendance/adjustments/:id — Admin deletes adjustment
+router.delete('/adjustments/:id', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const existing = await prisma.attendanceAdjustment.findUnique({ where: { id: req.params.id } });
+    if (!existing) { res.status(404).json({ error: 'Adjustment not found' }); return; }
+
+    await prisma.attendanceAdjustment.delete({ where: { id: req.params.id } });
+    res.json({ message: 'Adjustment deleted' });
+  } catch (err) {
+    console.error('Delete adjustment error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

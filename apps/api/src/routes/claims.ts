@@ -15,6 +15,8 @@ import { z }                         from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { createNotifications, createNotification } from '../lib/notify';
 import { sendClaimStatusEmail } from '../lib/email';
+import { isDelegateForEmployee } from '../lib/delegation';
+import { createAuditLog } from '../lib/audit';
 
 const router = Router();
 
@@ -122,16 +124,32 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
       return;
     }
 
+    // Check if this approval is via delegation (for audit trail)
+    let approvedViaDelegate = false;
+    if (req.user!.role === 'MANAGER') {
+      approvedViaDelegate = await isDelegateForEmployee(req.user!.id, claim.employeeId);
+    }
+
     const updated = await prisma.reimbursement.update({
       where: { id },
       data:  { status: 'APPROVED' },
+    });
+
+    await createAuditLog({
+      actorId: req.user!.id,
+      action: 'CLAIM_APPROVED',
+      entity: 'Reimbursement',
+      entityId: id,
+      oldValues: { status: 'PENDING' },
+      newValues: { status: 'APPROVED' },
+      changeSource: 'WEB',
     });
 
     await createNotification({
       userId:  claim.employeeId,
       type:    'CLAIM_APPROVED',
       title:   'Claim Approved',
-      message: `Your ${claim.category} claim for ₹${claim.amount} has been approved.`,
+      message: `Your ${claim.category} claim for ₹${claim.amount} has been approved.${approvedViaDelegate ? ' (via delegate approver)' : ''}`,
       link:    '/claims',
     });
 
@@ -161,6 +179,16 @@ router.patch('/:id/pay', authorize(['ADMIN']), async (req: AuthRequest, res: Res
     const updated = await prisma.reimbursement.update({
       where: { id },
       data:  { status: 'PAID', paidAt: new Date(), paidNote: note },
+    });
+
+    await createAuditLog({
+      actorId: req.user!.id,
+      action: 'CLAIM_PAID',
+      entity: 'Reimbursement',
+      entityId: id,
+      oldValues: { status: 'APPROVED' },
+      newValues: { status: 'PAID', paidNote: note || null },
+      changeSource: 'WEB',
     });
 
     await createNotification({
@@ -210,6 +238,16 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
     const updated = await prisma.reimbursement.update({
       where: { id },
       data:  { status: 'REJECTED' },
+    });
+
+    await createAuditLog({
+      actorId: req.user!.id,
+      action: 'CLAIM_REJECTED',
+      entity: 'Reimbursement',
+      entityId: id,
+      oldValues: { status: 'PENDING' },
+      newValues: { status: 'REJECTED' },
+      changeSource: 'WEB',
     });
 
     await createNotification({

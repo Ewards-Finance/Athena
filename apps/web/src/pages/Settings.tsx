@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, Settings2, Save, Clock, CalendarDays, AlertCircle, Key, DatabaseBackup, Copy, Check, Trash2, RefreshCw } from 'lucide-react';
+import { Loader2, Settings2, Save, Clock, CalendarDays, AlertCircle, Key, DatabaseBackup, Copy, Check, Trash2, RefreshCw, Users2, IndianRupee } from 'lucide-react';
 
 interface Settings {
   extension_arrival_time:    string;
@@ -18,6 +18,7 @@ interface Settings {
   late_warning_threshold:    string;
   probation_duration_months: string;
   notice_period_days:        string;
+  loan_interest_rate:        string;
 }
 
 const FIELD_META: { key: keyof Settings; label: string; hint: string; type: 'time' | 'number' }[] = [
@@ -67,6 +68,7 @@ export default function Settings() {
     late_warning_threshold:    '3',
     probation_duration_months: '6',
     notice_period_days:        '30',
+    loan_interest_rate:        '9',
   });
   const [loading,  setLoading]  = useState(true);
   const [saving,   setSaving]   = useState(false);
@@ -87,17 +89,37 @@ export default function Settings() {
   const [triggeringBackup, setTriggeringBackup] = useState(false);
   const [backupMsg, setBackupMsg]         = useState('');
 
+  // ── Delegation state ───────────────────────────────────────────────────────
+  interface Delegation { id: string; delegator: { email: string; profile?: { firstName: string; lastName: string; employeeId: string } }; delegate: { email: string; profile?: { firstName: string; lastName: string; employeeId: string } }; fromDate: string; toDate: string; isActive: boolean }
+  interface ManagerUser { id: string; email: string; profile?: { firstName: string; lastName: string } }
+  const [delegations, setDelegations]     = useState<Delegation[]>([]);
+  const [managers, setManagers]           = useState<ManagerUser[]>([]);
+  const [delDelegatorId, setDelDelegatorId] = useState('');
+  const [delDelegateId, setDelDelegateId]   = useState('');
+  const [delFromDate, setDelFromDate]       = useState('');
+  const [delToDate, setDelToDate]           = useState('');
+  const [creatingDel, setCreatingDel]       = useState(false);
+  const [delError, setDelError]             = useState('');
+
+  const fetchDelegations = () => {
+    api.get('/delegates/active').then((r) => setDelegations(r.data)).catch(() => {});
+  };
+
   useEffect(() => {
     Promise.all([
       api.get('/settings'),
       api.get('/api-keys'),
       api.get('/backups/status'),
       api.get('/backups'),
-    ]).then(([settingsRes, keysRes, statusRes, logsRes]) => {
+      api.get('/delegates/active'),
+      api.get('/employees').then((r) => r.data.filter((u: any) => u.role === 'ADMIN' || u.role === 'MANAGER' || u.role === 'OWNER')).catch(() => []),
+    ]).then(([settingsRes, keysRes, statusRes, logsRes, delRes, mgrs]) => {
       setSettings(settingsRes.data);
       setApiKeys(keysRes.data);
       setBackupStatus(statusRes.data);
       setBackupLogs(logsRes.data);
+      setDelegations(delRes.data);
+      setManagers(mgrs);
     }).catch(() => setError('Failed to load settings'))
       .finally(() => setLoading(false));
   }, []);
@@ -264,6 +286,37 @@ export default function Settings() {
               <p className="text-xs text-muted-foreground">{field.hint}</p>
             </div>
           ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <IndianRupee className="h-4 w-4" />
+            Loans & Advances
+          </CardTitle>
+          <CardDescription>Interest rate applied when admin approves employee loan requests</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="space-y-1.5">
+            <Label htmlFor="loan_interest_rate">Annual Interest Rate (%)</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                id="loan_interest_rate"
+                type="number"
+                min={0}
+                max={36}
+                step={0.1}
+                value={settings.loan_interest_rate}
+                onChange={(e) => handleChange('loan_interest_rate', e.target.value)}
+                className="w-24"
+              />
+              <span className="text-sm text-muted-foreground">% p.a.</span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Reducing-balance EMI formula. Set to 0 for interest-free loans. Default: 9%.
+            </p>
+          </div>
         </CardContent>
       </Card>
 
@@ -434,6 +487,123 @@ export default function Settings() {
                       </td>
                       <td className="px-4 py-2 text-xs text-gray-500">{log.fileSizeKb ? `${log.fileSizeKb} KB` : '—'}</td>
                       <td className="px-4 py-2 font-mono text-xs text-gray-400">{log.commitSha ? log.commitSha.slice(0, 7) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── Approval Delegation ──────────────────────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Users2 className="h-4 w-4" />
+            Approval Delegation
+          </CardTitle>
+          <CardDescription>
+            When a manager is on leave, delegate their approval authority to another manager or admin.
+            The delegate can approve leaves and claims on behalf of the delegator during the specified period.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Add delegation form */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Delegator (Manager on leave)</Label>
+              <select value={delDelegatorId} onChange={(e) => setDelDelegatorId(e.target.value)} className="w-full border rounded-md px-3 py-2 text-sm">
+                <option value="">Select manager...</option>
+                {managers.map((m) => (
+                  <option key={m.id} value={m.id}>{m.profile ? `${m.profile.firstName} ${m.profile.lastName}` : m.email}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Delegate (Covers during absence)</Label>
+              <select value={delDelegateId} onChange={(e) => setDelDelegateId(e.target.value)} className="w-full border rounded-md px-3 py-2 text-sm">
+                <option value="">Select delegate...</option>
+                {managers.filter((m) => m.id !== delDelegatorId).map((m) => (
+                  <option key={m.id} value={m.id}>{m.profile ? `${m.profile.firstName} ${m.profile.lastName}` : m.email}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>From Date</Label>
+              <Input type="date" value={delFromDate} onChange={(e) => setDelFromDate(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>To Date</Label>
+              <Input type="date" value={delToDate} onChange={(e) => setDelToDate(e.target.value)} />
+            </div>
+          </div>
+          {delError && <p className="text-sm text-red-500">{delError}</p>}
+          <Button
+            disabled={creatingDel || !delDelegatorId || !delDelegateId || !delFromDate || !delToDate}
+            onClick={async () => {
+              setCreatingDel(true);
+              setDelError('');
+              try {
+                await api.post('/delegates', { delegatorId: delDelegatorId, delegateId: delDelegateId, fromDate: delFromDate, toDate: delToDate });
+                setDelDelegatorId(''); setDelDelegateId(''); setDelFromDate(''); setDelToDate('');
+                fetchDelegations();
+              } catch (err: any) {
+                setDelError(err?.response?.data?.error || 'Failed to create delegation');
+              } finally {
+                setCreatingDel(false);
+              }
+            }}
+            style={{ backgroundColor: '#361963' }}
+          >
+            {creatingDel ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+            Add Delegation
+          </Button>
+
+          {/* Active delegations list */}
+          {delegations.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No active delegations.</p>
+          ) : (
+            <div className="border rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 border-b text-xs text-gray-500 uppercase">
+                    <th className="px-4 py-2 text-left">Delegator</th>
+                    <th className="px-4 py-2 text-left">Delegate</th>
+                    <th className="px-4 py-2 text-left">From</th>
+                    <th className="px-4 py-2 text-left">To</th>
+                    <th className="px-4 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {delegations.map((d) => (
+                    <tr key={d.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-2">
+                        {d.delegator?.profile ? `${d.delegator.profile.firstName} ${d.delegator.profile.lastName}` : d.delegator?.email}
+                      </td>
+                      <td className="px-4 py-2">
+                        {d.delegate?.profile ? `${d.delegate.profile.firstName} ${d.delegate.profile.lastName}` : d.delegate?.email}
+                      </td>
+                      <td className="px-4 py-2 text-xs text-gray-500">
+                        {new Date(d.fromDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                      </td>
+                      <td className="px-4 py-2 text-xs text-gray-500">
+                        {new Date(d.toDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                      </td>
+                      <td className="px-4 py-2 text-right">
+                        <button
+                          onClick={async () => {
+                            if (!confirm('Remove this delegation?')) return;
+                            try {
+                              await api.delete(`/delegates/${d.id}`);
+                              fetchDelegations();
+                            } catch { alert('Failed to remove'); }
+                          }}
+                          className="text-red-400 hover:text-red-600"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

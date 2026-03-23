@@ -12,12 +12,14 @@
  *   GET    /api/payroll/employees-ctc        - list all employees with CTC
  *   PUT    /api/payroll/employees-ctc/:userId - set annual CTC
  *
- * Payroll Runs (Admin):
+ * Payroll Runs (Admin/Owner):
  *   GET    /api/payroll/runs                 - list runs
  *   POST   /api/payroll/runs                 - create run (generates DRAFT)
  *   GET    /api/payroll/runs/:id             - run + all entries
- *   PATCH  /api/payroll/runs/:id/entries/:entryId - update MANUAL values
- *   POST   /api/payroll/runs/:id/finalize    - lock run (FINALIZED)
+ *   PATCH  /api/payroll/runs/:id/entries/:entryId - update MANUAL values (DRAFT only)
+ *   POST   /api/payroll/runs/:id/submit      - submit DRAFT for review (ADMIN)
+ *   POST   /api/payroll/runs/:id/finalize    - approve SUBMITTED run (OWNER only)
+ *   POST   /api/payroll/runs/:id/reopen      - reopen FINALIZED run (OWNER only)
  *   DELETE /api/payroll/runs/:id             - delete DRAFT run
  *   GET    /api/payroll/runs/:id/export      - download .xlsx
  *
@@ -29,9 +31,10 @@ import { Router, Response }          from 'express';
 import { prisma } from '../lib/prisma';
 import { z }                         from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
-import { computePayslipEntry, countWorkingDays, ComponentSnapshot, SATURDAY_FREE_OFF, UNLIMITED_LEAVE_TYPES } from '../lib/payrollEngine';
+import { computePayslipEntry, countWorkingDays, ComponentSnapshot, SATURDAY_FREE_OFF, UNLIMITED_LEAVE_TYPES, computeProRatedCtc, computeArrears } from '../lib/payrollEngine';
 import { generatePayrollExcel } from '../lib/excelExport';
 import { sendPayslipReadyEmail } from '../lib/email';
+import { createAuditLog } from '../lib/audit';
 
 const MONTH_NAMES = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
 
@@ -205,7 +208,7 @@ router.put('/employees-ctc/:userId', authorize(['ADMIN']), async (req: AuthReque
 // ─── Payroll Runs ─────────────────────────────────────────────────────────────
 
 // GET /api/payroll/runs
-router.get('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+router.get('/runs', authorize(['ADMIN', 'OWNER']), async (req: AuthRequest, res: Response) => {
   try {
     const { companyId } = req.query;
     const where: any = {};
@@ -241,9 +244,9 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
   const { month, year, companyId } = parsed.data;
 
   try {
-    // Check for duplicate run (now scoped by companyId)
+    // Check for duplicate REGULAR run (now scoped by companyId + runType)
     const existing = await prisma.payrollRun.findFirst({
-      where: { month, year, companyId: companyId ?? null },
+      where: { month, year, companyId: companyId ?? null, runType: 'REGULAR' },
     });
     if (existing) {
       res.status(409).json({ error: `Payroll run for ${month}/${year}${companyId ? ' (this company)' : ''} already exists (${existing.status})` });
@@ -566,6 +569,42 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
       }
     }
 
+    // ── Salary Revisions: mid-month pro-rating + backdated arrears ─────────
+    const allUserIds = employees.map(e => e.userId);
+
+    // Mid-month revisions: effectiveDate falls within this payroll month
+    const midMonthRevisions = await prisma.salaryRevision.findMany({
+      where: {
+        userId: { in: allUserIds },
+        effectiveDate: { gte: monthStart, lte: monthEnd },
+      },
+    });
+    const midMonthRevByUser: Record<string, typeof midMonthRevisions> = {};
+    for (const r of midMonthRevisions) {
+      if (!midMonthRevByUser[r.userId]) midMonthRevByUser[r.userId] = [];
+      midMonthRevByUser[r.userId].push(r);
+    }
+
+    // Arrears: backdated revisions (effectiveDate before this month, created after last finalized run)
+    const lastFinalizedRun = await prisma.payrollRun.findFirst({
+      where: { status: 'FINALIZED', companyId: companyId ?? null, runType: 'REGULAR' },
+      orderBy: [{ year: 'desc' }, { month: 'desc' }],
+      select: { createdAt: true },
+    });
+    const backdatedRevisions = await prisma.salaryRevision.findMany({
+      where: {
+        userId: { in: allUserIds },
+        effectiveDate: { lt: monthStart },
+        ...(lastFinalizedRun ? { createdAt: { gt: lastFinalizedRun.createdAt } } : {}),
+      },
+    });
+    const backdatedRevByUser: Record<string, typeof backdatedRevisions> = {};
+    for (const r of backdatedRevisions) {
+      if (!backdatedRevByUser[r.userId]) backdatedRevByUser[r.userId] = [];
+      backdatedRevByUser[r.userId].push(r);
+    }
+    // ── End salary revision queries ──────────────────────────────────────
+
     const run = await prisma.payrollRun.create({
       data: {
         month,
@@ -576,9 +615,32 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
         policyVersionId: activePolicyVersion?.id ?? null,
         entries: {
           create: employees.map((emp) => {
-            const annualCtc      = emp.annualCtc ?? 0;
-            const monthlyCtc    = r2(annualCtc / 12);
+            let annualCtc      = emp.annualCtc ?? 0;
+            let monthlyCtc     = r2(annualCtc / 12);
             const reimbursements = reimbByUser[emp.userId] ?? 0;
+
+            // Mid-month salary revision pro-rating
+            const userMidRevisions = midMonthRevByUser[emp.userId] ?? [];
+            if (userMidRevisions.length > 0) {
+              const proRated = computeProRatedCtc({
+                baseAnnualCtc: annualCtc,
+                workingDays,
+                month, year,
+                revisions: userMidRevisions,
+                holidays: holidayDates,
+              });
+              monthlyCtc = proRated.effectiveMonthlyCtc;
+              annualCtc  = proRated.effectiveAnnualCtc;
+            }
+
+            // Arrears for backdated revisions
+            const userBackdatedRevisions = backdatedRevByUser[emp.userId] ?? [];
+            const arrears = computeArrears({
+              currentMonth: month,
+              currentYear: year,
+              revisions: userBackdatedRevisions,
+            });
+
             // eXXX accounts (dummy/office staff) are always treated as fully present
             const isExxAccount = (emp.employeeId ?? '').startsWith('eXXX');
             const lwpDays  = isExxAccount ? 0 : Math.min(lwpByUser[emp.userId] ?? 0, workingDays);
@@ -597,6 +659,11 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
               computed.netPay = r2(computed.netPay - loanEmi);
             }
 
+            // Add arrears to net pay
+            if (arrears.arrearsAmount > 0) {
+              computed.netPay = r2(computed.netPay + arrears.arrearsAmount);
+            }
+
             return {
               userId:         emp.userId,
               monthlyCtc:     computed.monthlyCtc,
@@ -609,6 +676,8 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
               grossPay:       computed.grossPay,
               totalDeductions:computed.totalDeductions,
               netPay:         computed.netPay,
+              arrearsAmount:  arrears.arrearsAmount || null,
+              arrearsNote:    arrears.arrearsNote || null,
               ...companySnapshot,
               employeeCode:        emp.employeeId,
             };
@@ -681,8 +750,8 @@ router.patch('/runs/:id/entries/:entryId', authorize(['ADMIN']), async (req: Aut
   try {
     const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
     if (!run)              { res.status(404).json({ error: 'Run not found' }); return; }
-    if (run.status === 'FINALIZED') {
-      res.status(400).json({ error: 'Cannot edit a finalized payroll run' });
+    if (run.status !== 'DRAFT') {
+      res.status(400).json({ error: 'Can only edit entries on DRAFT payroll runs' });
       return;
     }
 
@@ -744,12 +813,60 @@ router.patch('/runs/:id/entries/:entryId', authorize(['ADMIN']), async (req: Aut
   }
 });
 
-// POST /api/payroll/runs/:id/finalize
-router.post('/runs/:id/finalize', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+// POST /api/payroll/runs/:id/submit — Admin submits DRAFT for Owner review (maker-checker)
+router.post('/runs/:id/submit', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
   try {
     const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
-    if (!run)                    { res.status(404).json({ error: 'Run not found' }); return; }
-    if (run.status === 'FINALIZED') { res.status(400).json({ error: 'Run is already finalized' }); return; }
+    if (!run)                   { res.status(404).json({ error: 'Run not found' }); return; }
+    if (run.status !== 'DRAFT') { res.status(400).json({ error: 'Only DRAFT runs can be submitted for review' }); return; }
+
+    const updated = await prisma.payrollRun.update({
+      where: { id: req.params.id },
+      data:  { status: 'SUBMITTED' },
+    });
+
+    // Audit log
+    await createAuditLog({
+      actorId:  req.user!.id,
+      action:   'PAYROLL_SUBMITTED',
+      entity:   'PayrollRun',
+      entityId: run.id,
+      oldValues: { status: 'DRAFT' },
+      newValues: { status: 'SUBMITTED', month: run.month, year: run.year },
+      changeSource: 'WEB',
+    });
+
+    // Notify all OWNER users
+    const owners = await prisma.user.findMany({
+      where: { role: 'OWNER', isActive: true },
+      select: { id: true },
+    });
+    const monthName = MONTH_NAMES[run.month] ?? String(run.month);
+    for (const owner of owners) {
+      await prisma.notification.create({
+        data: {
+          userId:  owner.id,
+          type:    'PAYROLL_SUBMITTED',
+          title:   'Payroll Submitted for Review',
+          message: `${monthName} ${run.year} payroll run has been submitted for your approval.`,
+          link:    `/payroll/runs/${run.id}`,
+        },
+      }).catch(() => {});
+    }
+
+    res.json(updated);
+  } catch (err) {
+    console.error('Submit run error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/payroll/runs/:id/finalize — OWNER approves SUBMITTED run (maker-checker)
+router.post('/runs/:id/finalize', authorize(['OWNER']), async (req: AuthRequest, res: Response) => {
+  try {
+    const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
+    if (!run)                       { res.status(404).json({ error: 'Run not found' }); return; }
+    if (run.status !== 'SUBMITTED') { res.status(400).json({ error: 'Only SUBMITTED runs can be finalized' }); return; }
 
     // ── Finalize run + update loan installments atomically ──────────
     const entries = await prisma.payslipEntry.findMany({
@@ -816,8 +933,8 @@ router.post('/runs/:id/finalize', authorize(['ADMIN']), async (req: AuthRequest,
   }
 });
 
-// POST /api/payroll/runs/:id/reopen — Admin reopens a FINALIZED run back to DRAFT
-router.post('/runs/:id/reopen', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+// POST /api/payroll/runs/:id/reopen — Owner reopens a FINALIZED run back to DRAFT
+router.post('/runs/:id/reopen', authorize(['OWNER']), async (req: AuthRequest, res: Response) => {
   try {
     const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
     if (!run)                       { res.status(404).json({ error: 'Run not found' }); return; }
@@ -829,15 +946,14 @@ router.post('/runs/:id/reopen', authorize(['ADMIN']), async (req: AuthRequest, r
     });
 
     // Audit log
-    await prisma.auditLog.create({
-      data: {
-        actorId:  req.user!.id,
-        action:   'PAYROLL_REOPENED',
-        entity:   'PayrollRun',
-        entityId: run.id,
-        oldValues: { status: 'FINALIZED' },
-        newValues: { status: 'DRAFT', month: run.month, year: run.year },
-      },
+    await createAuditLog({
+      actorId:  req.user!.id,
+      action:   'PAYROLL_REOPENED',
+      entity:   'PayrollRun',
+      entityId: run.id,
+      oldValues: { status: 'FINALIZED' },
+      newValues: { status: 'DRAFT', month: run.month, year: run.year },
+      changeSource: 'WEB',
     });
 
     res.json(updated);
@@ -852,8 +968,8 @@ router.delete('/runs/:id', authorize(['ADMIN']), async (req: AuthRequest, res: R
   try {
     const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
     if (!run)                    { res.status(404).json({ error: 'Run not found' }); return; }
-    if (run.status === 'FINALIZED') {
-      res.status(400).json({ error: 'Cannot delete a finalized payroll run. Contact system administrator.' });
+    if (run.status !== 'DRAFT') {
+      res.status(400).json({ error: 'Only DRAFT runs can be deleted' });
       return;
     }
     await prisma.payrollRun.delete({ where: { id: req.params.id } });

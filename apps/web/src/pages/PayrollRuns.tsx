@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Badge }  from '@/components/ui/badge';
 import api        from '@/lib/api';
 import { formatCurrency } from '@/lib/utils';
+import { useAuth } from '@/hooks/useAuth';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface CompanyOption {
@@ -23,7 +24,8 @@ interface PayrollRun {
   id:           string;
   month:        number;
   year:         number;
-  status:       'DRAFT' | 'FINALIZED';
+  status:       'DRAFT' | 'SUBMITTED' | 'FINALIZED';
+  runType?:     'REGULAR' | 'FULL_AND_FINAL';
   processedBy:  string;
   createdAt:    string;
   companyId?:   string | null;
@@ -40,6 +42,7 @@ const MONTHS = [
 export default function PayrollRuns() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
 
   // Companies
   const [companies, setCompanies] = useState<CompanyOption[]>([]);
@@ -107,6 +110,36 @@ export default function PayrollRuns() {
       alert(err?.response?.data?.error ?? 'Failed to reopen run.');
     } finally {
       setReopening(null);
+    }
+  };
+
+  // Submit for review (ADMIN → SUBMITTED)
+  const [submitting, setSubmitting] = useState<string | null>(null);
+  const handleSubmit = async (id: string, month: number, year: number) => {
+    if (!confirm(`Submit ${MONTHS[month]} ${year} payroll for Owner review?`)) return;
+    setSubmitting(id);
+    try {
+      await api.post(`/payroll/runs/${id}/submit`);
+      await queryClient.invalidateQueries({ queryKey: ['payroll-runs'] });
+    } catch (err: any) {
+      alert(err?.response?.data?.error ?? 'Failed to submit.');
+    } finally {
+      setSubmitting(null);
+    }
+  };
+
+  // Approve / finalize (OWNER on SUBMITTED)
+  const [approving, setApproving] = useState<string | null>(null);
+  const handleApprove = async (id: string, month: number, year: number) => {
+    if (!confirm(`Approve and finalize ${MONTHS[month]} ${year} payroll? This will lock the run and notify employees.`)) return;
+    setApproving(id);
+    try {
+      await api.post(`/payroll/runs/${id}/finalize`);
+      await queryClient.invalidateQueries({ queryKey: ['payroll-runs'] });
+    } catch (err: any) {
+      alert(err?.response?.data?.error ?? 'Failed to approve.');
+    } finally {
+      setApproving(null);
     }
   };
 
@@ -259,6 +292,9 @@ export default function PayrollRuns() {
                   >
                     <td className="px-4 py-3 font-semibold" style={{ color: '#361963' }}>
                       {MONTHS[run.month]} {run.year}
+                      {run.runType === 'FULL_AND_FINAL' && (
+                        <Badge className="ml-2 bg-red-100 text-red-700 border-red-200 text-[10px] font-normal">F&F</Badge>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-xs">
                       {run.company?.displayName || <span className="text-gray-400">All</span>}
@@ -268,10 +304,12 @@ export default function PayrollRuns() {
                         className={
                           run.status === 'FINALIZED'
                             ? 'bg-green-100 text-green-700 border-green-200'
+                            : run.status === 'SUBMITTED'
+                            ? 'bg-blue-100 text-blue-700 border-blue-200'
                             : 'bg-yellow-100 text-yellow-700 border-yellow-200'
                         }
                       >
-                        {run.status === 'FINALIZED' ? 'Finalized' : 'Draft'}
+                        {run.status === 'FINALIZED' ? 'Finalized' : run.status === 'SUBMITTED' ? 'Submitted' : 'Draft'}
                       </Badge>
                     </td>
                     <td className="px-4 py-3 text-center text-gray-600">{run._count.entries}</td>
@@ -290,15 +328,41 @@ export default function PayrollRuns() {
                         >
                           {run.status === 'DRAFT' ? 'Edit' : 'View'}
                         </Button>
+                        {/* DRAFT: Admin can submit for review or delete */}
                         {run.status === 'DRAFT' && (
-                          <button
-                            onClick={() => handleDelete(run.id, run.month, run.year)}
-                            className="text-xs text-red-400 hover:text-red-600 px-2 py-1 rounded"
-                          >
-                            Delete
-                          </button>
+                          <>
+                            <Button
+                              size="sm"
+                              className="h-7 text-xs bg-blue-600 hover:bg-blue-700 text-white"
+                              disabled={submitting === run.id}
+                              onClick={() => handleSubmit(run.id, run.month, run.year)}
+                            >
+                              {submitting === run.id ? 'Submitting…' : 'Submit for Review'}
+                            </Button>
+                            <button
+                              onClick={() => handleDelete(run.id, run.month, run.year)}
+                              className="text-xs text-red-400 hover:text-red-600 px-2 py-1 rounded"
+                            >
+                              Delete
+                            </button>
+                          </>
                         )}
-                        {run.status === 'FINALIZED' && (
+                        {/* SUBMITTED: Owner can approve; Admin sees "Awaiting Approval" */}
+                        {run.status === 'SUBMITTED' && user?.role === 'OWNER' && (
+                          <Button
+                            size="sm"
+                            className="h-7 text-xs bg-green-600 hover:bg-green-700 text-white"
+                            disabled={approving === run.id}
+                            onClick={() => handleApprove(run.id, run.month, run.year)}
+                          >
+                            {approving === run.id ? 'Approving…' : 'Approve & Finalize'}
+                          </Button>
+                        )}
+                        {run.status === 'SUBMITTED' && user?.role !== 'OWNER' && (
+                          <span className="text-xs text-blue-500 italic">Awaiting approval</span>
+                        )}
+                        {/* FINALIZED: Owner can reopen */}
+                        {run.status === 'FINALIZED' && user?.role === 'OWNER' && (
                           <button
                             disabled={reopening === run.id}
                             onClick={() => handleReopen(run.id, run.month, run.year)}

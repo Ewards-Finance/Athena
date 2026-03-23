@@ -77,7 +77,7 @@ export default function Assets() {
   // Form states
   const [addForm, setAddForm] = useState({
     name: '', assetTag: '', category: 'LAPTOP', serialNumber: '',
-    purchaseDate: '', purchaseCost: '', notes: '',
+    purchaseDate: '', purchaseCost: '', notes: '', assignToUserId: '',
   });
   const [editForm, setEditForm] = useState({
     name: '', assetTag: '', category: 'LAPTOP', serialNumber: '',
@@ -123,13 +123,19 @@ export default function Assets() {
     if (!addForm.name || !addForm.assetTag) return;
     setSubmitting(true);
     try {
-      await api.post('/assets', {
-        ...addForm,
+      const res = await api.post('/assets', {
+        name: addForm.name, assetTag: addForm.assetTag, category: addForm.category,
+        serialNumber: addForm.serialNumber || undefined,
         purchaseCost: addForm.purchaseCost ? parseFloat(addForm.purchaseCost) : undefined,
         purchaseDate: addForm.purchaseDate || undefined,
+        notes: addForm.notes || undefined,
       });
+      // If an employee was selected, immediately assign the asset
+      if (addForm.assignToUserId) {
+        await api.post(`/assets/${res.data.id}/assign`, { userId: addForm.assignToUserId });
+      }
       setShowAddDialog(false);
-      setAddForm({ name: '', assetTag: '', category: 'LAPTOP', serialNumber: '', purchaseDate: '', purchaseCost: '', notes: '' });
+      setAddForm({ name: '', assetTag: '', category: 'LAPTOP', serialNumber: '', purchaseDate: '', purchaseCost: '', notes: '', assignToUserId: '' });
       fetchAssets();
     } catch {
       // error
@@ -313,7 +319,7 @@ export default function Assets() {
           <Button
             style={{ backgroundColor: '#361963' }}
             className="text-white"
-            onClick={() => setShowAddDialog(true)}
+            onClick={() => { setShowAddDialog(true); fetchEmployees(); }}
           >
             <Plus className="w-4 h-4 mr-1" /> Add Asset
           </Button>
@@ -447,6 +453,21 @@ export default function Assets() {
             <div>
               <Label>Notes</Label>
               <Input value={addForm.notes} onChange={e => setAddForm({ ...addForm, notes: e.target.value })} />
+            </div>
+            <div>
+              <Label>Assign To (optional)</Label>
+              <select
+                className="w-full border rounded px-3 py-2 text-sm"
+                value={addForm.assignToUserId}
+                onChange={e => setAddForm({ ...addForm, assignToUserId: e.target.value })}
+              >
+                <option value="">— Leave unassigned —</option>
+                {employees.map((emp: any) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.profile?.firstName} {emp.profile?.lastName} ({emp.profile?.employeeId})
+                  </option>
+                ))}
+              </select>
             </div>
             <Button
               className="w-full text-white"

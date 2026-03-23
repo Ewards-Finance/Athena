@@ -6,7 +6,7 @@
  * Tab 3 "Manage"     — leave policy config + quota overrides           (Admin only)
  */
 
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useForm }     from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z }           from 'zod';
@@ -169,14 +169,19 @@ export default function Leaves() {
   const [docWarning,      setDocWarning]      = useState('');
 
   // ── Form / UI state ──
-  const [showForm,       setShowForm]       = useState(false);
-  const [overlapWarning, setOverlapWarning] = useState<string | null>(null);
-  const [pendingData,    setPendingData]    = useState<any>(null);
+  const [showForm,        setShowForm]        = useState(false);
+  const [overlapWarning,  setOverlapWarning]  = useState<string | null>(null);
+  const [pendingData,     setPendingData]     = useState<any>(null);
+  const [forceSubmitting, setForceSubmitting] = useState(false);
   const [rejectId,       setRejectId]       = useState<string | null>(null);
   const [rejectComment,  setRejectComment]  = useState('');
   const [editingUserId,  setEditingUserId]  = useState<string | null>(null);
   const [quotaDraft,     setQuotaDraft]     = useState<Record<string, number>>({});
   const [newLT,          setNewLT]          = useState({ code: '', label: '', days: 0 });
+
+  // Synchronous guard against rapid double-tap on mobile (disabled={isSubmitting} alone
+  // is insufficient because the DOM attribute update waits for the next React render cycle)
+  const submitGuard = useRef(false);
 
   // ── Form ──
   const { register, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } =
@@ -258,6 +263,8 @@ export default function Leaves() {
   };
 
   const onSubmit = async (data: LeaveFormData) => {
+    if (submitGuard.current) return;   // blocks rapid re-tap before React re-renders
+    submitGuard.current = true;
     try { await submitLeave(data, false); }
     catch (err: any) {
       if (err?.response?.status === 409 && err?.response?.data?.warning) {
@@ -266,16 +273,21 @@ export default function Leaves() {
         return;
       }
       toast.error(err?.response?.data?.error || 'Failed to apply leave');
+    } finally {
+      submitGuard.current = false;
     }
   };
 
   const confirmOverlap = async () => {
-    if (!pendingData) return;
+    if (!pendingData || forceSubmitting) return;
+    setForceSubmitting(true);
     try { await submitLeave(pendingData, true); }
     catch (err: any) {
       toast.error(err?.response?.data?.error || 'Failed to apply leave');
       setOverlapWarning(null);
       setPendingData(null);
+    } finally {
+      setForceSubmitting(false);
     }
   };
 
@@ -421,8 +433,8 @@ export default function Leaves() {
     } finally { setSavingQuota(false); }
   };
 
-  // ── Active leave types for apply form ─────────────────────────────────────
-  const leaveTypesForForm = policies.filter((p) => p.isActive);
+  // ── Active leave types for apply form (TRAVELLING is applied from Travel Proof page)
+  const leaveTypesForForm = policies.filter((p) => p.isActive && p.leaveType !== 'TRAVELLING');
 
   // ── Own vs team leaves ────────────────────────────────────────────────────
   const myLeaves   = leaves.filter((l) => l.employeeId === user?.id);
@@ -479,7 +491,9 @@ export default function Leaves() {
                 </div>
                 <div className="flex gap-2 justify-end">
                   <Button variant="outline" size="sm" onClick={() => { setOverlapWarning(null); setPendingData(null); }}>Cancel</Button>
-                  <Button size="sm" style={{ backgroundColor: '#FD8C27' }} className="text-white" onClick={confirmOverlap}>Submit Anyway</Button>
+                  <Button size="sm" style={{ backgroundColor: '#FD8C27' }} className="text-white" onClick={confirmOverlap} disabled={forceSubmitting}>
+                    {forceSubmitting && <Loader2 className="mr-2 h-3 w-3 animate-spin" />}Submit Anyway
+                  </Button>
                 </div>
               </div>
             </div>
@@ -508,7 +522,9 @@ export default function Leaves() {
                 </div>
                 <div className="flex gap-2 justify-end">
                   <Button variant="outline" size="sm" onClick={() => { setSandwichWarning(''); setLwpWarning(''); setDocWarning(''); setPendingData(null); }}>Cancel</Button>
-                  <Button size="sm" style={{ backgroundColor: '#FD8C27' }} className="text-white" onClick={async () => {
+                  <Button size="sm" style={{ backgroundColor: '#FD8C27' }} className="text-white" disabled={forceSubmitting} onClick={async () => {
+                    if (forceSubmitting) return;
+                    setForceSubmitting(true);
                     try {
                       await api.post(`/leaves?force=true`, pendingData);
                       setSandwichWarning(''); setLwpWarning(''); setDocWarning('');
@@ -517,8 +533,12 @@ export default function Leaves() {
                       toast.success('Leave application submitted');
                     } catch (err: any) {
                       toast.error(err?.response?.data?.error || 'Failed to apply leave');
+                    } finally {
+                      setForceSubmitting(false);
                     }
-                  }}>Submit Anyway</Button>
+                  }}>
+                    {forceSubmitting && <Loader2 className="mr-2 h-3 w-3 animate-spin" />}Submit Anyway
+                  </Button>
                 </div>
               </div>
             </div>
@@ -1126,7 +1146,7 @@ function LeaveRow({
           <div className="flex items-center gap-1.5">
             <select value={selectedType} onChange={(e) => setSelectedType(e.target.value)}
               className="text-xs border border-input rounded-md px-2 py-1 bg-background focus:outline-none focus:ring-1 focus:ring-ring">
-              {policies.filter((p) => p.isActive).map((p) => <option key={p.leaveType} value={p.leaveType}>{p.label}</option>)}
+              {policies.filter((p) => p.isActive && p.leaveType !== 'TRAVELLING').map((p) => <option key={p.leaveType} value={p.leaveType}>{p.label}</option>)}
             </select>
             <Button size="sm" variant="outline" className="px-2 text-[#361963] border-[#361963]/40"
               onClick={handleSaveType} disabled={actionLoading === leave.id + '-changetype' || selectedType === leave.leaveType}>

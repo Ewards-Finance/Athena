@@ -38,7 +38,18 @@ const CATEGORY_COLORS: Record<string, string> = {
 interface Employee { id: string; profile: { firstName: string; lastName: string; employeeId: string } | null }
 interface Doc {
   id: string; category: string; name: string; fileUrl: string;
-  description?: string; createdAt: string;
+  description?: string; createdAt: string; expiryDate?: string | null;
+}
+
+function expiryBadge(expiryDate?: string | null) {
+  if (!expiryDate) return null;
+  const expiry = new Date(expiryDate);
+  const now    = new Date();
+  const daysLeft = Math.ceil((expiry.getTime() - now.getTime()) / 86400000);
+  if (daysLeft < 0)  return <span className="text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded px-2 py-0.5">Expired</span>;
+  if (daysLeft <= 30) return <span className="text-xs font-medium text-orange-600 bg-orange-50 border border-orange-200 rounded px-2 py-0.5">Expires in {daysLeft}d</span>;
+  if (daysLeft <= 90) return <span className="text-xs font-medium text-yellow-600 bg-yellow-50 border border-yellow-200 rounded px-2 py-0.5">Expires in {daysLeft}d</span>;
+  return <span className="text-xs text-muted-foreground">Expires {expiry.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</span>;
 }
 
 export default function Documents() {
@@ -53,7 +64,7 @@ export default function Documents() {
   const [uploading, setUploading]     = useState(false);
   const [uploadErr, setUploadErr]     = useState('');
   const [form, setForm]               = useState({
-    category: 'OTHER', name: '', description: '', fileUrl: '',
+    category: 'OTHER', name: '', description: '', fileUrl: '', expiryDate: '',
   });
   const [uploadingFile, setUploadingFile] = useState(false);
 
@@ -105,7 +116,7 @@ export default function Documents() {
     try {
       await api.post(`/documents/${selectedUserId}`, form);
       setShowUpload(false);
-      setForm({ category: 'OTHER', name: '', description: '', fileUrl: '' });
+      setForm({ category: 'OTHER', name: '', description: '', fileUrl: '', expiryDate: '' });
       await queryClient.invalidateQueries({ queryKey: ['documents', selectedUserId] });
     } catch (err: any) {
       setUploadErr(err?.response?.data?.error ?? 'Failed to add document');
@@ -195,9 +206,12 @@ export default function Documents() {
                   {doc.description && (
                     <p className="text-xs text-muted-foreground truncate">{doc.description}</p>
                   )}
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {new Date(doc.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
-                  </p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <p className="text-xs text-muted-foreground">
+                      Added {new Date(doc.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    </p>
+                    {expiryBadge(doc.expiryDate)}
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <a
@@ -267,6 +281,17 @@ export default function Documents() {
                 value={form.description}
                 onChange={(e) => setForm((p) => ({ ...p, description: e.target.value }))}
               />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1">Expiry Date (optional)</label>
+              <input
+                type="date"
+                className="w-full border rounded-md px-3 py-2 text-sm"
+                value={form.expiryDate}
+                onChange={(e) => setForm((p) => ({ ...p, expiryDate: e.target.value }))}
+              />
+              <p className="text-xs text-muted-foreground mt-0.5">For contracts, visas, medical certs, etc.</p>
             </div>
 
             <div>

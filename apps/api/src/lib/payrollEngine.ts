@@ -289,6 +289,165 @@ export const SATURDAY_FREE_OFF: Record<'FULL_TIME' | 'INTERN', number> = {
 export const UNLIMITED_LEAVE_TYPES = ['TEMPORARY_WFH', 'TRAVELLING'] as const;
 export const WFH_DEDUCTION_RATE    = 0.30;
 
+// ─── Mid-Month Salary Revision Pro-Rating ────────────────────────────────────
+/**
+ * Count working days within a sub-range of a month (startDay to endDay inclusive).
+ * Uses the same logic as countWorkingDays: all calendar days minus holidays.
+ */
+export function countWorkingDaysInRange(
+  year: number, month: number,
+  startDay: number, endDay: number,
+  holidays: Date[],
+): number {
+  let count = 0;
+  for (let day = startDay; day <= endDay; day++) {
+    const isHoliday = holidays.some(
+      (h) =>
+        h.getFullYear() === year &&
+        h.getMonth()    === month - 1 &&
+        h.getDate()     === day
+    );
+    if (!isHoliday) count++;
+  }
+  return count;
+}
+
+/**
+ * Compute effective monthly CTC when a salary revision falls mid-month.
+ *
+ * If revision effectiveDate is day D of the target month:
+ *   - days 1..(D-1) use oldCtc rate
+ *   - days D..end use newCtc rate
+ *   - weighted by working days in each range
+ *
+ * If multiple revisions in one month, uses the LATEST one (last effectiveDate).
+ * Returns effectiveAnnualCtc = newCtc for TDS purposes (forward-looking).
+ */
+export function computeProRatedCtc(params: {
+  baseAnnualCtc: number;
+  workingDays:   number;
+  month:         number;
+  year:          number;
+  revisions:     { effectiveDate: Date; oldCtc: number; newCtc: number }[];
+  holidays:      Date[];
+}): { effectiveMonthlyCtc: number; effectiveAnnualCtc: number; wasProRated: boolean } {
+  const { baseAnnualCtc, workingDays, month, year, revisions, holidays } = params;
+
+  // Filter revisions whose effectiveDate falls in this month
+  const midMonthRevisions = revisions.filter((r) => {
+    const d = new Date(r.effectiveDate);
+    return d.getFullYear() === year && d.getMonth() === month - 1;
+  });
+
+  if (midMonthRevisions.length === 0 || workingDays === 0) {
+    return {
+      effectiveMonthlyCtc: round2(baseAnnualCtc / 12),
+      effectiveAnnualCtc: baseAnnualCtc,
+      wasProRated: false,
+    };
+  }
+
+  // Use the latest revision in the month
+  midMonthRevisions.sort(
+    (a, b) => new Date(b.effectiveDate).getTime() - new Date(a.effectiveDate).getTime()
+  );
+  const rev = midMonthRevisions[0];
+  const revDay = new Date(rev.effectiveDate).getDate();
+  const daysInMonth = new Date(year, month, 0).getDate();
+
+  // Working days before revision vs on/after
+  const daysBefore = revDay > 1
+    ? countWorkingDaysInRange(year, month, 1, revDay - 1, holidays)
+    : 0;
+  const daysAfter = countWorkingDaysInRange(year, month, revDay, daysInMonth, holidays);
+
+  const oldMonthly = rev.oldCtc / 12;
+  const newMonthly = rev.newCtc / 12;
+  const effectiveMonthlyCtc = round2(
+    (daysBefore / workingDays) * oldMonthly +
+    (daysAfter / workingDays) * newMonthly
+  );
+
+  return {
+    effectiveMonthlyCtc,
+    effectiveAnnualCtc: rev.newCtc, // TDS uses the new CTC going forward
+    wasProRated: true,
+  };
+}
+
+// ─── Arrears Calculation ─────────────────────────────────────────────────────
+/**
+ * Calculate arrears for backdated salary revisions.
+ *
+ * A revision is "backdated" when effectiveDate is BEFORE the current payroll month
+ * but was created (createdAt) AFTER the last finalized payroll run. This means the
+ * revision wasn't captured in any previous payroll.
+ *
+ * For each such revision, compute delta for each missed month between effectiveDate
+ * and the current payroll month.
+ */
+export function computeArrears(params: {
+  currentMonth: number;
+  currentYear:  number;
+  revisions:    { effectiveDate: Date; oldCtc: number; newCtc: number }[];
+}): { arrearsAmount: number; arrearsNote: string } {
+  const { currentMonth, currentYear, revisions } = params;
+
+  if (revisions.length === 0) {
+    return { arrearsAmount: 0, arrearsNote: '' };
+  }
+
+  const MONTH_NAMES = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  let totalArrears = 0;
+  const notes: string[] = [];
+
+  for (const rev of revisions) {
+    const effDate = new Date(rev.effectiveDate);
+    const effMonth = effDate.getMonth() + 1; // 1-based
+    const effYear = effDate.getFullYear();
+    const monthlyDelta = round2((rev.newCtc - rev.oldCtc) / 12);
+
+    if (monthlyDelta <= 0) continue; // only positive revisions generate arrears
+
+    // Count months from effective month up to (but not including) current month
+    let months = 0;
+    let m = effMonth, y = effYear;
+    while (y < currentYear || (y === currentYear && m < currentMonth)) {
+      months++;
+      m++;
+      if (m > 12) { m = 1; y++; }
+    }
+
+    if (months > 0) {
+      const arrears = round2(monthlyDelta * months);
+      totalArrears += arrears;
+
+      const fromLabel = `${MONTH_NAMES[effMonth]} ${effYear}`;
+      // "To" month is the month before currentMonth
+      let toM = currentMonth - 1, toY = currentYear;
+      if (toM < 1) { toM = 12; toY--; }
+      const toLabel = `${MONTH_NAMES[toM]} ${toY}`;
+
+      notes.push(
+        `CTC revised ${fmtLakh(rev.oldCtc)}→${fmtLakh(rev.newCtc)} ` +
+        `effective ${fromLabel}: ₹${arrears.toLocaleString('en-IN')} ` +
+        `(${months} month${months > 1 ? 's' : ''}, ${fromLabel}–${toLabel})`
+      );
+    }
+  }
+
+  return {
+    arrearsAmount: round2(totalArrears),
+    arrearsNote: notes.length > 0 ? `Arrears: ${notes.join('; ')}` : '',
+  };
+}
+
+function fmtLakh(n: number): string {
+  if (n >= 100_000) return `${round2(n / 100_000)}L`;
+  return `₹${n.toLocaleString('en-IN')}`;
+}
+
 // ─── Helper ──────────────────────────────────────────────────────────────────
 function round2(n: number): number {
   return Math.round(n * 100) / 100;

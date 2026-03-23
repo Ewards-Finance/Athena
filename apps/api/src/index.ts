@@ -44,6 +44,10 @@ import assetRoutes            from './routes/assets';
 import loanRoutes             from './routes/loans';
 import compoffRoutes          from './routes/compoff';
 import travelProofRoutes      from './routes/travelProof';
+import founderDashboardRoutes from './routes/founderDashboard';
+import serviceRequestRoutes   from './routes/serviceRequests';
+import delegateRoutes         from './routes/delegates';
+import letterRoutes           from './routes/letters';
 import cron                   from 'node-cron';
 import { runBackup, isBackupConfigured } from './lib/backup';
 import { prisma } from './lib/prisma';
@@ -115,6 +119,10 @@ app.use('/api/assets',            assetRoutes);
 app.use('/api/loans',             loanRoutes);
 app.use('/api/compoff',           compoffRoutes);
 app.use('/api/travel-proof',      travelProofRoutes);
+app.use('/api/founder-dashboard', founderDashboardRoutes);
+app.use('/api/service-requests',  serviceRequestRoutes);
+app.use('/api/delegates',         delegateRoutes);
+app.use('/api/letters',           letterRoutes);
 
 // --- Health check ---
 app.get('/api/health', (_req, res) => {
@@ -359,7 +367,149 @@ app.listen(Number(PORT), '0.0.0.0', () => {
     }
   });
 
-  console.log('⏰ Cron jobs active: comp-off expiry (1AM), doc expiry (6AM), travel proof reminder (8AM), travel proof missing (12:05AM)');
+  // ── Probation alert cron (daily at 7:00 AM) ──────────────────────────────
+  cron.schedule('0 7 * * *', async () => {
+    try {
+      const now = new Date();
+      const thirtyDaysFromNow = new Date(now);
+      thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
+
+      // Find employees on probation whose probation ends within 30 days
+      const probationers = await prisma.profile.findMany({
+        where: {
+          dateOfJoining: { not: null },
+          user: { isActive: true, employmentStatus: 'PROBATION' },
+        },
+        select: {
+          userId: true,
+          firstName: true,
+          lastName: true,
+          dateOfJoining: true,
+        },
+      });
+
+      const ending: { userId: string; name: string; endDate: Date }[] = [];
+      for (const p of probationers) {
+        if (!p.dateOfJoining) continue;
+        const probEnd = new Date(p.dateOfJoining);
+        probEnd.setDate(probEnd.getDate() + 90);
+        if (probEnd <= thirtyDaysFromNow && probEnd >= now) {
+          ending.push({ userId: p.userId, name: `${p.firstName} ${p.lastName}`, endDate: probEnd });
+        }
+      }
+
+      if (ending.length > 0) {
+        const admins = await prisma.user.findMany({
+          where: { role: { in: ['ADMIN', 'OWNER'] }, isActive: true },
+          select: { id: true },
+        });
+        for (const admin of admins) {
+          for (const emp of ending) {
+            await createNotification({
+              userId: admin.id,
+              type: 'PROBATION_ENDING',
+              title: 'Probation Ending Soon',
+              message: `${emp.name}'s probation ends on ${emp.endDate.toDateString()}. Please review.`,
+              link: '/founder',
+            });
+          }
+        }
+        console.log(`[cron] Sent probation alerts for ${ending.length} employee(s)`);
+      }
+    } catch (err) {
+      console.error('[cron] Probation alert error:', err);
+    }
+  });
+
+  // ── Overdue exit clearance cron (daily at 9:00 AM) ────────────────────────
+  cron.schedule('0 9 * * *', async () => {
+    try {
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+      const overdue = await prisma.exitRequest.findMany({
+        where: {
+          status: 'CLEARANCE_PENDING',
+          createdAt: { lte: sevenDaysAgo },
+          clearances: { some: { status: 'PENDING' } },
+        },
+        include: {
+          user: { select: { profile: { select: { firstName: true, lastName: true } } } },
+          clearances: { where: { status: 'PENDING' }, select: { department: true } },
+        },
+      });
+
+      if (overdue.length > 0) {
+        const admins = await prisma.user.findMany({
+          where: { role: { in: ['ADMIN', 'OWNER'] }, isActive: true },
+          select: { id: true },
+        });
+        for (const exit of overdue) {
+          const empName = exit.user?.profile
+            ? `${exit.user.profile.firstName} ${exit.user.profile.lastName}`
+            : 'An employee';
+          const depts = exit.clearances.map(c => c.department).join(', ');
+          for (const admin of admins) {
+            await createNotification({
+              userId: admin.id,
+              type: 'EXIT_CLEARANCE_OVERDUE',
+              title: 'Overdue Exit Clearance',
+              message: `${empName}'s exit clearance is overdue (pending: ${depts}). Please follow up.`,
+              link: '/exit',
+            });
+          }
+        }
+        console.log(`[cron] Sent overdue clearance alerts for ${overdue.length} exit(s)`);
+      }
+    } catch (err) {
+      console.error('[cron] Overdue clearance error:', err);
+    }
+  });
+
+  // ── Pending policy ack reminder (daily at 10:00 AM) ──────────────────────
+  cron.schedule('0 10 * * *', async () => {
+    try {
+      const threeDaysAgo = new Date();
+      threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+
+      // Find unacknowledged records created more than 3 days ago
+      const pending = await prisma.policyAcknowledgement.findMany({
+        where: {
+          isAcknowledged: false,
+          createdAt: { lte: threeDaysAgo },
+        },
+        include: {
+          policyVersion: { select: { name: true } },
+        },
+      });
+
+      // Check if a reminder was already sent in the last 3 days
+      for (const ack of pending) {
+        const recentReminder = await prisma.notification.findFirst({
+          where: {
+            userId: ack.userId,
+            type: 'POLICY_ACK_REMINDER',
+            createdAt: { gte: threeDaysAgo },
+          },
+        });
+        if (recentReminder) continue;
+
+        await createNotification({
+          userId: ack.userId,
+          type: 'POLICY_ACK_REMINDER',
+          title: 'Policy Acknowledgement Reminder',
+          message: `Please acknowledge the policy "${ack.policyVersion.name}". This is an automated reminder.`,
+          link: '/dashboard',
+        });
+      }
+
+      if (pending.length > 0) console.log(`[cron] Processed ${pending.length} pending policy ack reminder(s)`);
+    } catch (err) {
+      console.error('[cron] Policy ack reminder error:', err);
+    }
+  });
+
+  console.log('⏰ Cron jobs active: comp-off expiry (1AM), doc expiry (6AM), probation alert (7AM), travel proof reminder (8AM), overdue clearance (9AM), policy ack reminder (10AM), travel proof missing (12:05AM)');
 });
 
 export default app;

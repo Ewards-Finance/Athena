@@ -12,6 +12,7 @@ import { Card, CardContent }                from '@/components/ui/card';
 import { Button }                           from '@/components/ui/button';
 import { Badge }                            from '@/components/ui/badge';
 import api from '@/lib/api';
+import { useAuth } from '@/hooks/useAuth';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface PayrollComponent {
@@ -35,6 +36,8 @@ interface PayslipEntry {
   grossPay:       number;
   totalDeductions:number;
   netPay:         number;
+  arrearsAmount?: number | null;
+  arrearsNote?:   string | null;
   user: {
     profile: {
       firstName:   string;
@@ -50,7 +53,8 @@ interface PayrollRun {
   id:         string;
   month:      number;
   year:       number;
-  status:     'DRAFT' | 'FINALIZED';
+  status:     'DRAFT' | 'SUBMITTED' | 'FINALIZED';
+  runType?:   'REGULAR' | 'FULL_AND_FINAL';
   createdAt:  string;
   entries:    PayslipEntry[];
   components: PayrollComponent[];
@@ -70,6 +74,7 @@ export default function PayrollRunDetail() {
   const { id }   = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
 
   // Track local edits to MANUAL cells: { entryId: { componentName: value } }
   const [manualEdits, setManualEdits] = useState<Record<string, Record<string, string>>>({});
@@ -170,6 +175,22 @@ export default function PayrollRunDetail() {
     }
   };
 
+  // ── Submit for review ────────────────────────────────────────────────────
+  const [submittingForReview, setSubmittingForReview] = useState(false);
+  const handleSubmitForReview = async () => {
+    if (!run) return;
+    if (!confirm(`Submit ${MONTHS[run.month]} ${run.year} payroll for Owner review?`)) return;
+    setSubmittingForReview(true);
+    try {
+      await api.post(`/payroll/runs/${id}/submit`);
+      fetchRun();
+    } catch (err: any) {
+      alert(err?.response?.data?.error ?? 'Failed to submit.');
+    } finally {
+      setSubmittingForReview(false);
+    }
+  };
+
   // ── Download .xlsx ────────────────────────────────────────────────────────
   const handleDownload = async () => {
     if (!run) return;
@@ -228,10 +249,17 @@ export default function PayrollRunDetail() {
           </button>
           <h1 className="text-2xl font-bold" style={{ color: '#361963' }}>
             {MONTHS[run.month]} {run.year} Payroll
+            {run.runType === 'FULL_AND_FINAL' && (
+              <Badge className="ml-3 bg-red-100 text-red-700 border-red-200 text-xs font-normal align-middle">Full & Final</Badge>
+            )}
           </h1>
           <div className="flex items-center gap-3 mt-1">
-            <Badge className={isDraft ? 'bg-yellow-100 text-yellow-700 border-yellow-200' : 'bg-green-100 text-green-700 border-green-200'}>
-              {isDraft ? 'Draft' : 'Finalized'}
+            <Badge className={
+              run.status === 'FINALIZED' ? 'bg-green-100 text-green-700 border-green-200'
+              : run.status === 'SUBMITTED' ? 'bg-blue-100 text-blue-700 border-blue-200'
+              : 'bg-yellow-100 text-yellow-700 border-yellow-200'
+            }>
+              {run.status === 'FINALIZED' ? 'Finalized' : run.status === 'SUBMITTED' ? 'Submitted for Review' : 'Draft'}
             </Badge>
             <span className="text-xs text-gray-400">
               {run.entries.length} employee{run.entries.length !== 1 ? 's' : ''} •
@@ -243,20 +271,36 @@ export default function PayrollRunDetail() {
         <div className="flex items-center gap-2">
           {isDraft && manualComps.length > 0 && (
             <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-md">
-              Edit manual columns below, then finalize.
+              Edit manual columns below, then submit for review.
             </p>
           )}
-          {isDraft && (
+          {/* DRAFT: Admin submits for review (not OWNER — they approve, not submit) */}
+          {isDraft && user?.role === 'ADMIN' && (
+            <Button
+              onClick={handleSubmitForReview}
+              disabled={submittingForReview}
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              {submittingForReview ? 'Submitting…' : 'Submit for Review'}
+            </Button>
+          )}
+          {/* SUBMITTED: Owner approves */}
+          {run.status === 'SUBMITTED' && user?.role === 'OWNER' && (
             <Button
               onClick={handleFinalize}
               disabled={finalizing}
-              style={{ backgroundColor: '#361963' }}
-              className="text-white"
+              className="bg-green-600 hover:bg-green-700 text-white"
             >
-              {finalizing ? 'Finalizing…' : 'Finalize Run'}
+              {finalizing ? 'Approving…' : 'Approve & Finalize'}
             </Button>
           )}
-          {!isDraft && (
+          {run.status === 'SUBMITTED' && user?.role !== 'OWNER' && (
+            <span className="text-sm text-blue-600 italic bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-md">
+              Awaiting Owner approval
+            </span>
+          )}
+          {/* FINALIZED: Owner can reopen */}
+          {run.status === 'FINALIZED' && user?.role === 'OWNER' && (
             <Button
               onClick={handleReopen}
               disabled={reopening}
@@ -428,6 +472,11 @@ export default function PayrollRunDetail() {
                     {/* Net Pay */}
                     <td className="px-3 py-2.5 text-right font-bold border-l" style={{ color: '#361963' }}>
                       ₹{fmt(entry.netPay)}
+                      {(entry.arrearsAmount ?? 0) > 0 && (
+                        <div className="text-[10px] font-normal text-amber-600" title={entry.arrearsNote ?? ''}>
+                          +₹{fmt(entry.arrearsAmount!)} arrears
+                        </div>
+                      )}
                     </td>
 
                     {/* Save button (DRAFT only) */}
@@ -490,15 +539,25 @@ export default function PayrollRunDetail() {
         </CardContent>
       </Card>
 
-      {isDraft && (
+      {isDraft && user?.role === 'ADMIN' && (
+        <div className="flex justify-end">
+          <Button
+            onClick={handleSubmitForReview}
+            disabled={submittingForReview}
+            className="bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            {submittingForReview ? 'Submitting…' : 'Submit for Review'}
+          </Button>
+        </div>
+      )}
+      {run.status === 'SUBMITTED' && user?.role === 'OWNER' && (
         <div className="flex justify-end">
           <Button
             onClick={handleFinalize}
             disabled={finalizing}
-            style={{ backgroundColor: '#361963' }}
-            className="text-white"
+            className="bg-green-600 hover:bg-green-700 text-white"
           >
-            {finalizing ? 'Finalizing…' : 'Finalize & Lock Payroll Run'}
+            {finalizing ? 'Approving…' : 'Approve & Finalize Payroll Run'}
           </Button>
         </div>
       )}

@@ -148,6 +148,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       subjectId: userId,
       subjectLabel: employeeName,
       newValues: { reason, lastWorkingDate, noticePeriodDays: finalNoticeDays, buyoutDays, buyoutAmount },
+      changeSource: 'WEB',
     });
 
     res.status(201).json(exitRequest);
@@ -279,6 +280,7 @@ router.patch('/:id/clearance', authorize(['ADMIN', 'OWNER']), async (req: AuthRe
       subjectEntity: 'ExitRequest',
       subjectId: exitRequest.id,
       newValues: { department, status: 'CLEARED', remarks },
+      changeSource: 'WEB',
     });
 
     res.json(updated);
@@ -440,7 +442,93 @@ router.post('/:id/settlement', authorize(['ADMIN', 'OWNER']), async (req: AuthRe
         otherDeductions,
         totalPayable,
       },
+      changeSource: 'WEB',
     });
+
+    // ── Create Full & Final payroll run ──────────────────────────────────
+    // Generate a FULL_AND_FINAL payroll run with a single entry for the exiting employee
+    try {
+      const ffMonth = lwd.getMonth() + 1;
+      const ffYear = lwd.getFullYear();
+
+      // Find employee's last assignment for company snapshot
+      const lastAssignment = await prisma.employeeCompanyAssignment.findFirst({
+        where: { userId: exitRequest.userId },
+        orderBy: [{ status: 'asc' }, { effectiveFrom: 'desc' }],
+        include: { company: true },
+      });
+
+      // Fetch active policy version for this F&F run
+      const ffCompanyId = lastAssignment?.companyId ?? null;
+      const activePolicyVersion = await prisma.policyVersion.findFirst({
+        where: ffCompanyId
+          ? { isActive: true, scope: 'COMPANY_SPECIFIC', companyId: ffCompanyId }
+          : { isActive: true, scope: 'GLOBAL' },
+      }) ?? await prisma.policyVersion.findFirst({ where: { isActive: true, scope: 'GLOBAL' } });
+
+      const ffAnnualCtc = lastAssignment?.annualCTC ?? annualCtc;
+      const ffMonthlyCtc = r2(ffAnnualCtc / 12);
+
+      // Company snapshot from assignment
+      const ffCompanySnapshot: Record<string, any> = {};
+      if (lastAssignment?.company) {
+        const co = lastAssignment.company;
+        ffCompanySnapshot.companyLegalName = co.legalName;
+        ffCompanySnapshot.companyAddress = [co.addressLine1, co.addressLine2, co.city, co.state, co.pincode].filter(Boolean).join(', ') || null;
+        ffCompanySnapshot.companyPan = co.pan;
+      }
+
+      // F&F earnings and deductions breakdown
+      const ffEarnings: Record<string, number> = {
+        'Pro-rated Salary': lastMonthSalaryProrated,
+      };
+      if (leaveEncashmentAmount > 0) ffEarnings['Leave Encashment'] = leaveEncashmentAmount;
+      if (pendingClaimsAmount > 0)   ffEarnings['Pending Claims'] = pendingClaimsAmount;
+      if (arrearsPending > 0)        ffEarnings['Arrears'] = arrearsPending;
+      if (bonusPending > 0)          ffEarnings['Bonus'] = bonusPending;
+
+      const ffDeductions: Record<string, number> = {};
+      if (noticePeriodRecovery > 0)  ffDeductions['Notice Period Recovery'] = noticePeriodRecovery;
+      if (loanOutstanding > 0)       ffDeductions['Loan Outstanding'] = loanOutstanding;
+      if (otherDeductions > 0)       ffDeductions['Other Deductions'] = otherDeductions;
+
+      const totalEarnings = r2(lastMonthSalaryProrated + leaveEncashmentAmount + pendingClaimsAmount + arrearsPending + bonusPending);
+      const totalDeds = r2(noticePeriodRecovery + loanOutstanding + otherDeductions);
+
+      await prisma.payrollRun.create({
+        data: {
+          month: ffMonth,
+          year: ffYear,
+          status: 'DRAFT',
+          runType: 'FULL_AND_FINAL',
+          processedBy: actor.id,
+          companyId: lastAssignment?.companyId ?? null,
+          policyVersionId: activePolicyVersion?.id ?? null,
+          entries: {
+            create: [{
+              userId: exitRequest.userId,
+              monthlyCtc: ffMonthlyCtc,
+              workingDays: daysInLwdMonth,  // total calendar days in the last month (matches proration denominator)
+              lwpDays: 0,
+              paidDays: lwd.getDate(),      // days actually worked (proration numerator)
+              earnings: ffEarnings,
+              deductions: ffDeductions,
+              reimbursements: 0,
+              grossPay: totalEarnings,
+              totalDeductions: totalDeds,
+              netPay: totalPayable,
+              ...ffCompanySnapshot,
+              employeeCode: lastAssignment?.employeeCode ?? profile.employeeId,
+              designationSnapshot: lastAssignment?.designation ?? profile.designation,
+            }],
+          },
+        },
+      });
+    } catch (ffErr) {
+      // F&F run creation is non-critical — log but don't fail the settlement
+      console.error('[exit] F&F payroll run creation error (non-critical):', ffErr);
+    }
+    // ── End F&F payroll run ──────────────────────────────────────────────
 
     res.status(201).json(settlement);
   } catch (err) {
@@ -502,6 +590,7 @@ router.patch('/:id/cancel', authorize(['ADMIN', 'OWNER']), async (req: AuthReque
       subjectLabel: employeeName,
       oldValues: { status: exitRequest.status },
       newValues: { status: 'CANCELLED' },
+      changeSource: 'WEB',
     });
 
     // Notify the employee

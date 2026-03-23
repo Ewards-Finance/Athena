@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/dialog';
 import { useAuth } from '../hooks/useAuth';
 import api from '@/lib/api';
-import { ArrowLeft, Plus, Calculator, XCircle } from 'lucide-react';
+import { ArrowLeft, Plus, Calculator, XCircle, FileText } from 'lucide-react';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -381,6 +381,24 @@ export default function ExitManagement() {
                   </table>
                 </CardContent>
               </Card>
+            )}
+
+            {/* Relieving Letter (SETTLED only) */}
+            {ex.status === 'SETTLED' && (
+              <Button
+                variant="outline"
+                onClick={async () => {
+                  try {
+                    const r = await api.post('/letters/generate', { employeeId: ex.userId, type: 'RELIEVING' }, { responseType: 'blob' });
+                    const url = URL.createObjectURL(new Blob([r.data], { type: 'application/pdf' }));
+                    const a = document.createElement('a'); a.href = url; a.download = `relieving-letter.pdf`; a.click();
+                    URL.revokeObjectURL(url);
+                  } catch { alert('Failed to generate relieving letter'); }
+                }}
+              >
+                <FileText className="w-4 h-4 mr-2" />
+                Download Relieving Letter
+              </Button>
             )}
 
             {/* Cancel Exit */}

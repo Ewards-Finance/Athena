@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: 'Arial', sans-serif; font-size: 13px; color: #222; line-height: 1.7; }
+  .letterhead { text-align: center; border-bottom: 3px solid #361963; padding-bottom: 16px; margin-bottom: 30px; }
+  .company-name { font-size: 22px; font-weight: bold; color: #361963; margin-bottom: 4px; }
+  .company-address { font-size: 11px; color: #666; }
+  .ref-line { font-size: 11px; color: #888; margin-bottom: 20px; }
+  .subject { font-weight: bold; text-align: center; margin: 20px 0; font-size: 15px; text-decoration: underline; }
+  .content p { margin-bottom: 12px; text-align: justify; }
+  .signature { margin-top: 60px; }
+  .signature-line { border-top: 1px solid #333; width: 200px; margin-top: 50px; }
+  table.details { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  table.details td { padding: 6px 12px; border: 1px solid #ddd; }
+  table.details td:first-child { font-weight: bold; width: 40%; background: #f9f9f9; }
+</style>
+</head>
+<body>
+  <div class="letterhead">
+    <div class="company-name">{{companyLegalName}}</div>
+    <div class="company-address">{{companyAddress}}</div>
+  </div>
+
+  <div class="ref-line">Date: {{today}} &nbsp;|&nbsp; Ref: APT/{{employeeCode}}/{{currentYear}}</div>
+
+  <p>Dear <strong>{{firstName}} {{lastName}}</strong>,</p>
+
+  <div class="subject">LETTER OF APPOINTMENT</div>
+
+  <div class="content">
+    <p>With reference to your application and subsequent discussions, we are pleased to appoint you as <strong>{{designation}}</strong> in the <strong>{{department}}</strong> department of {{companyLegalName}}, effective <strong>{{formatDate dateOfJoining}}</strong>.</p>
+
+    <table class="details">
+      <tr><td>Employee Code</td><td>{{employeeCode}}</td></tr>
+      <tr><td>Designation</td><td>{{designation}}</td></tr>
+      <tr><td>Department</td><td>{{department}}</td></tr>
+      <tr><td>Annual CTC</td><td>{{formatCurrency annualCTC}}</td></tr>
+      <tr><td>Date of Joining</td><td>{{formatDate dateOfJoining}}</td></tr>
+      <tr><td>Probation Period</td><td>{{probationDays}} days</td></tr>
+      <tr><td>Notice Period</td><td>{{noticePeriodDays}} days</td></tr>
+    </table>
+
+    <p><strong>Terms and Conditions:</strong></p>
+    <ol>
+      <li>You will be on probation for {{probationDays}} days from the date of joining. During this period, either party may terminate the employment with 15 days' notice.</li>
+      <li>After confirmation, the notice period shall be {{noticePeriodDays}} days from either side.</li>
+      <li>You shall abide by all rules, regulations, and policies of the company as amended from time to time.</li>
+      <li>Your compensation is confidential and should not be disclosed to any colleague.</li>
+      <li>You are expected to devote your full time and attention to the duties assigned to you.</li>
+    </ol>
+
+    <p>Please sign and return a copy of this letter as acceptance of the terms and conditions.</p>
+  </div>
+
+  <div class="signature">
+    <p>For <strong>{{companyLegalName}}</strong></p>
+    <div class="signature-line"></div>
+    <p>Authorized Signatory</p>
+  </div>
+
+  <div style="margin-top: 60px; border-top: 1px dashed #ccc; padding-top: 20px;">
+    <p><strong>Employee Acceptance:</strong></p>
+    <p>I, {{firstName}} {{lastName}}, accept the terms and conditions of this appointment.</p>
+    <br/><br/>
+    <p>Signature: ____________________ &nbsp;&nbsp;&nbsp; Date: ____________________</p>
+  </div>
+</body>
+</html>

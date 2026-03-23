@@ -35,6 +35,8 @@ import Assets             from '@/pages/Assets';
 import Loans              from '@/pages/Loans';
 import CompOff            from '@/pages/CompOff';
 import TravelProof        from '@/pages/TravelProof';
+import FounderDashboard   from '@/pages/FounderDashboard';
+import Helpdesk           from '@/pages/Helpdesk';
 
 // ProtectedRoute: wraps routes that require login
 // If user is not authenticated, redirects to /login
@@ -101,6 +103,9 @@ export default function App() {
             <Route path="/compoff"               element={<CompOff />} />
             <Route path="/travel-proof"          element={<TravelProof />} />
 
+            {/* All roles: helpdesk */}
+            <Route path="/helpdesk"              element={<Helpdesk />} />
+
             {/* All roles: reports (Daily Attendance visible to all) */}
             <Route path="/reports"               element={<Reports />} />
 
@@ -120,6 +125,7 @@ export default function App() {
             {/* Owner-only routes */}
             <Route element={<OwnerRoute />}>
               <Route path="/policies"              element={<Policies />} />
+              <Route path="/founder"               element={<FounderDashboard />} />
             </Route>
           </Route>
         </Route>

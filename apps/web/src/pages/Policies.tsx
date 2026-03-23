@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { toast } from 'sonner';
 import api from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -79,6 +80,8 @@ export default function Policies() {
   const [editingRules, setEditingRules] = useState<Record<string, string>>({});
   const [savingRules, setSavingRules] = useState(false);
   const [tab, setTab] = useState<'rules' | 'acks'>('rules');
+  const [ackFilter, setAckFilter] = useState<'all' | 'pending' | 'acked'>('all');
+  const [sendingReminder, setSendingReminder] = useState(false);
 
   const fetchVersions = () => {
     api.get('/policies')
@@ -374,33 +377,86 @@ export default function Policies() {
             </div>
           )}
 
-          {tab === 'acks' && (
-            <div className="space-y-2">
-              {acknowledgements.length === 0 ? (
-                <p className="text-muted-foreground text-sm py-4">No acknowledgement records yet.</p>
-              ) : (
-                acknowledgements.map(ack => (
-                  <div key={ack.id} className="flex items-center justify-between p-3 rounded-lg border">
-                    <div>
-                      <p className="text-sm font-medium">
-                        {ack.user.profile?.firstName} {ack.user.profile?.lastName}
-                      </p>
-                      <p className="text-xs text-muted-foreground">{ack.user.email}</p>
-                    </div>
-                    <div>
-                      {ack.isAcknowledged ? (
-                        <Badge className="bg-green-100 text-green-800">
-                          <Check className="h-3 w-3 mr-1" /> Acknowledged
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary">Pending</Badge>
+          {tab === 'acks' && (() => {
+            const ackedCount = acknowledgements.filter(a => a.isAcknowledged).length;
+            const totalCount = acknowledgements.length;
+            const pendingCount = totalCount - ackedCount;
+            const pct = totalCount > 0 ? Math.round((ackedCount / totalCount) * 100) : 0;
+            const filtered = ackFilter === 'all' ? acknowledgements
+              : ackFilter === 'pending' ? acknowledgements.filter(a => !a.isAcknowledged)
+              : acknowledgements.filter(a => a.isAcknowledged);
+
+            const handleSendReminder = async () => {
+              if (!selectedVersion) return;
+              setSendingReminder(true);
+              try {
+                const res = await api.post(`/policies/${selectedVersion.id}/remind`);
+                toast.success(res.data?.message || 'Reminders sent');
+              } catch {
+                toast.error('Failed to send reminders');
+              } finally {
+                setSendingReminder(false);
+              }
+            };
+
+            return (
+              <div className="space-y-3">
+                {/* Summary */}
+                {totalCount > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-foreground">{ackedCount} of {totalCount} acknowledged ({pct}%)</span>
+                      {pendingCount > 0 && (
+                        <Button size="sm" variant="outline" onClick={handleSendReminder} disabled={sendingReminder}>
+                          <Send className="h-3 w-3 mr-1" />
+                          {sendingReminder ? 'Sending...' : `Remind ${pendingCount} pending`}
+                        </Button>
                       )}
                     </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-green-500 h-2 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                    </div>
                   </div>
-                ))
-              )}
-            </div>
-          )}
+                )}
+
+                {/* Filter buttons */}
+                <div className="flex gap-1">
+                  {(['all', 'pending', 'acked'] as const).map(f => (
+                    <Button key={f} size="sm" variant={ackFilter === f ? 'default' : 'ghost'} onClick={() => setAckFilter(f)}>
+                      {f === 'all' ? `All (${totalCount})` : f === 'pending' ? `Pending (${pendingCount})` : `Acknowledged (${ackedCount})`}
+                    </Button>
+                  ))}
+                </div>
+
+                {/* List */}
+                {filtered.length === 0 ? (
+                  <p className="text-muted-foreground text-sm py-4">
+                    {totalCount === 0 ? 'No acknowledgement records yet.' : 'No records match this filter.'}
+                  </p>
+                ) : (
+                  filtered.map(ack => (
+                    <div key={ack.id} className="flex items-center justify-between p-3 rounded-lg border">
+                      <div>
+                        <p className="text-sm font-medium">
+                          {ack.user.profile?.firstName} {ack.user.profile?.lastName}
+                        </p>
+                        <p className="text-xs text-muted-foreground">{ack.user.email}</p>
+                      </div>
+                      <div>
+                        {ack.isAcknowledged ? (
+                          <Badge className="bg-green-100 text-green-800">
+                            <Check className="h-3 w-3 mr-1" /> Acknowledged
+                          </Badge>
+                        ) : (
+                          <Badge variant="secondary">Pending</Badge>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
 

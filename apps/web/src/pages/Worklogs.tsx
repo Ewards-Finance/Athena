@@ -186,6 +186,9 @@ function MyWorklogsTab() {
   const [editSaving,  setEditSaving]  = useState(false);
   const [deleting,    setDeleting]    = useState<string | null>(null);
 
+  // Clear edit mode when navigating to a different month
+  useEffect(() => { setEditId(null); setEditContent(''); }, [month, year]);
+
   const fetchLogs = useCallback(async () => {
     setLoading(true); setFetchErr('');
     try {
@@ -366,7 +369,7 @@ function TeamWorklogsTab({ isAdmin }: { isAdmin: boolean }) {
   const [rejectSaving,  setRejectSaving]  = useState(false);
   const [restoringId,   setRestoringId]   = useState<string | null>(null);
 
-  const endpoint = isAdmin ? '/worklogs/team' : '/worklogs/team';
+  const endpoint = isAdmin ? '/worklogs/all' : '/worklogs/team';
 
   const fetchTeam = useCallback(async () => {
     setLoading(true); setFetchErr('');

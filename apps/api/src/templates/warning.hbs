@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { font-family: 'Arial', sans-serif; font-size: 13px; color: #222; line-height: 1.7; }
+  .letterhead { text-align: center; border-bottom: 3px solid #361963; padding-bottom: 16px; margin-bottom: 30px; }
+  .company-name { font-size: 22px; font-weight: bold; color: #361963; margin-bottom: 4px; }
+  .company-address { font-size: 11px; color: #666; }
+  .ref-line { font-size: 11px; color: #888; margin-bottom: 20px; }
+  .subject { font-weight: bold; text-align: center; margin: 20px 0; font-size: 15px; text-decoration: underline; color: #c00; }
+  .content p { margin-bottom: 12px; text-align: justify; }
+  .signature { margin-top: 60px; }
+  .signature-line { border-top: 1px solid #333; width: 200px; margin-top: 50px; }
+  .warning-box { background: #fff5f5; border: 1px solid #fcc; padding: 12px; margin: 16px 0; border-left: 4px solid #c00; }
+</style>
+</head>
+<body>
+  <div class="letterhead">
+    <div class="company-name">{{companyLegalName}}</div>
+    <div class="company-address">{{companyAddress}}</div>
+  </div>
+
+  <div class="ref-line">Date: {{today}} &nbsp;|&nbsp; CONFIDENTIAL</div>
+
+  <p>Dear <strong>{{firstName}} {{lastName}}</strong>,</p>
+  <p>Employee Code: {{employeeCode}}</p>
+
+  <div class="subject">WARNING LETTER</div>
+
+  <div class="content">
+    <p>This letter serves as a formal warning regarding the following matter:</p>
+
+    <div class="warning-box">
+      <strong>Reason:</strong> {{warningReason}}
+    </div>
+
+    {{#if warningDetails}}<p>{{warningDetails}}</p>{{/if}}
+
+    <p>This behavior/action is in violation of company policy and is unacceptable. You are hereby advised to take corrective action immediately.</p>
+
+    <p>Please note that any recurrence of such behavior may lead to further disciplinary action, up to and including termination of employment.</p>
+
+    <p>We expect your full cooperation in ensuring that this matter is resolved promptly.</p>
+  </div>
+
+  <div class="signature">
+    <p>For <strong>{{companyLegalName}}</strong></p>
+    <div class="signature-line"></div>
+    <p>Authorized Signatory</p>
+  </div>
+
+  <div style="margin-top: 60px; border-top: 1px dashed #ccc; padding-top: 20px;">
+    <p><strong>Employee Acknowledgement:</strong></p>
+    <p>I acknowledge receipt of this warning letter.</p>
+    <br/><br/>
+    <p>Signature: ____________________ &nbsp;&nbsp;&nbsp; Date: ____________________</p>
+  </div>
+</body>
+</html>
