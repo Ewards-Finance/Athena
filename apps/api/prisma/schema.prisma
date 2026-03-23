@@ -517,16 +517,25 @@ model SystemSetting {
 }
 
 model SalaryRevision {
-  id            String   @id @default(cuid())
+  id            String         @id @default(cuid())
   userId        String
   effectiveDate DateTime
   oldCtc        Float
   newCtc        Float
   reason        String?
   revisedBy     String
-  createdAt     DateTime @default(now())
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  revisor       User     @relation("SalaryRevisor", fields: [revisedBy], references: [id])
+  status        RevisionStatus @default(PENDING)
+  proposedBy    String         // userId of who created this revision
+  approvedBy    String?        // userId of who approved/rejected
+  createdAt     DateTime       @default(now())
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  revisor       User           @relation("SalaryRevisor", fields: [revisedBy], references: [id])
+}
+
+enum RevisionStatus {
+  PENDING
+  APPROVED
+  REJECTED
 }
 
 model EmployeeDocument {

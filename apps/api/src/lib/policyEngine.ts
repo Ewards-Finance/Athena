@@ -37,6 +37,9 @@ const DEFAULTS: Record<string, string> = {
   carry_forward_max_days:     '15',
   probation_default_days:     '90',
   extension_arrival_time:     '11:00',
+  late_lwp_penalty_days:      '0.5',   // LWP days deducted per late mark beyond threshold
+  max_loan_amount:            '5000000', // max loan amount an employee can request (₹)
+  max_loan_installments:      '60',    // max EMI tenure in months
 };
 
 /**
@@ -211,6 +214,9 @@ export const DEFAULT_POLICY_RULES = Object.entries(DEFAULTS).map(([key, value]) 
     carry_forward_max_days:     'Max EL days to carry forward at year end',
     probation_default_days:     'Default probation period in days',
     extension_arrival_time:     'Extended arrival cutoff for certain days',
+    late_lwp_penalty_days:      'LWP days deducted per late mark beyond the free threshold',
+    max_loan_amount:            'Maximum loan amount an employee can request (₹)',
+    max_loan_installments:      'Maximum EMI tenure in months for loans',
   };
 
   return {

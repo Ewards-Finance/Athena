@@ -23,6 +23,7 @@ import { z }                   from 'zod';
 import multer                  from 'multer';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { createAuditLog }      from '../lib/audit';
+import { getNumericRule }      from '../lib/policyEngine';
 
 const router = Router();
 
@@ -507,6 +508,7 @@ router.post('/imports/:id/apply-late-policy', authorize(['ADMIN']), async (req: 
   const HALF_DAY_HOUR = halfDayTime[0];
   const HALF_DAY_MIN  = halfDayTime[1];
   const LATE_FREE_COUNT = parseInt(settingMap['late_warning_threshold'] || '3', 10);
+  const LATE_LWP_DAYS   = await getNumericRule(null, 'late_lwp_penalty_days', 0.5);
 
   try {
     const importBatch = await prisma.attendanceImport.findUnique({
@@ -602,7 +604,7 @@ router.post('/imports/:id/apply-late-policy', authorize(['ADMIN']), async (req: 
       if (r.isLate) {
         const count = (runningLate.get(r.userId) ?? 0) + 1;
         runningLate.set(r.userId, count);
-        if (count > LATE_FREE_COUNT) lwpDeduction = 0.5;
+        if (count > LATE_FREE_COUNT) lwpDeduction = LATE_LWP_DAYS;
       }
       finalUpdates.push({ id: r.id, isLate: r.isLate, lwpDeduction });
     }

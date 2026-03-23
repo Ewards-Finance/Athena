@@ -22,6 +22,7 @@ import { z } from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { createNotification } from '../lib/notify';
 import { createAuditLog } from '../lib/audit';
+import { getNumericRule } from '../lib/policyEngine';
 
 const router = Router();
 
@@ -92,8 +93,8 @@ function generateSchedule(
 // ─── Zod schemas ──────────────────────────────────────────────────────────────
 
 const loanSchema = z.object({
-  amount:       z.number().positive('Amount must be positive').max(5000000, 'Max loan amount is 50 lakhs'),
-  installments: z.number().int().min(1).max(60, 'Max 60 installments'),
+  amount:       z.number().positive('Amount must be positive'),
+  installments: z.number().int().min(1, 'Minimum 1 installment'),
   reason:       z.string().min(5, 'Reason must be at least 5 characters'),
 });
 
@@ -149,6 +150,18 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER']), async (req: AuthRequest, re
   const { amount, installments, reason } = parsed.data;
 
   try {
+    // Validate against policy-configured limits
+    const maxAmount       = await getNumericRule(null, 'max_loan_amount', 5000000);
+    const maxInstallments = await getNumericRule(null, 'max_loan_installments', 60);
+    if (amount > maxAmount) {
+      res.status(400).json({ error: `Maximum loan amount is ₹${maxAmount.toLocaleString('en-IN')}` });
+      return;
+    }
+    if (installments > maxInstallments) {
+      res.status(400).json({ error: `Maximum installments allowed is ${maxInstallments}` });
+      return;
+    }
+
     // Block if there's already an active/pending loan
     const existing = await prisma.loanRequest.findFirst({
       where: { userId: req.user!.id, status: { in: ['PENDING', 'APPROVED', 'ACTIVE'] } },

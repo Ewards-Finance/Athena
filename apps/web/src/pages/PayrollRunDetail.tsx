@@ -83,7 +83,8 @@ export default function PayrollRunDetail() {
 
   const [finalizing, setFinalizing]   = useState(false);
   const [finalizeError, setFinalizeError] = useState('');
-  const [downloading, setDownloading] = useState(false);
+  const [downloading, setDownloading]         = useState(false);
+  const [downloadingBank, setDownloadingBank] = useState(false);
   const [reopening, setReopening]     = useState(false);
 
   // ── Fetch run ─────────────────────────────────────────────────────────────
@@ -212,6 +213,27 @@ export default function PayrollRunDetail() {
     }
   };
 
+  // ── Download Bank Transfer Sheet ─────────────────────────────────────────
+  const handleBankExport = async () => {
+    if (!run) return;
+    setDownloadingBank(true);
+    try {
+      const res = await api.get(`/payroll/runs/${id}/bank-export`, { responseType: 'blob' });
+      const url  = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `bank-transfer-${MONTHS[run.month].toLowerCase()}-${run.year}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      alert('Bank export failed. Please try again.');
+    } finally {
+      setDownloadingBank(false);
+    }
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
   if (loading)   return <p className="text-gray-400 text-sm p-6">Loading…</p>;
   if (error)     return <p className="text-red-500 text-sm p-6">{error}</p>;
@@ -308,6 +330,16 @@ export default function PayrollRunDetail() {
               className="border-amber-400 text-amber-600 hover:bg-amber-50"
             >
               {reopening ? 'Reopening…' : 'Reopen Run'}
+            </Button>
+          )}
+          {run.status === 'FINALIZED' && (
+            <Button
+              onClick={handleBankExport}
+              disabled={downloadingBank}
+              variant="outline"
+              className="border-green-500 text-green-700 hover:bg-green-50"
+            >
+              {downloadingBank ? 'Generating…' : '🏦 Bank Transfer Sheet'}
             </Button>
           )}
           <Button

@@ -22,7 +22,7 @@ import {
   Loader2, Users, Search, Settings2,
   ChevronDown, ChevronUp, Check,
   UserPlus, UserX, Eye, EyeOff, Pencil, TrendingUp, Upload, Download, KeyRound, Copy, X,
-  Building2, ArrowLeftRight,
+  Building2, ArrowLeftRight, ShieldCheck,
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -290,6 +290,15 @@ export default function Organization() {
   const [salRevEmp,      setSalRevEmp]      = useState<Employee | null>(null);
   const [salRevisions,   setSalRevisions]   = useState<any[]>([]);
   const [loadingSalRev,  setLoadingSalRev]  = useState(false);
+  const [revActionId,    setRevActionId]    = useState('');  // revision being approved/rejected
+
+  // Probation confirm/extend modal state
+  const [probEmp,        setProbEmp]        = useState<Employee | null>(null);
+  const [probAction,     setProbAction]     = useState<'CONFIRM' | 'EXTEND'>('CONFIRM');
+  const [probDays,       setProbDays]       = useState('30');
+  const [probNotes,      setProbNotes]      = useState('');
+  const [probSaving,     setProbSaving]     = useState(false);
+  const [probError,      setProbError]      = useState('');
 
   // Reset password state
   const [resettingPwdId, setResettingPwdId] = useState<string | null>(null);
@@ -1221,6 +1230,17 @@ export default function Organization() {
                             </td>
                             <td className="py-3 text-right">
                               <div className="flex items-center justify-end gap-1">
+                                {emp.employmentStatus === 'PROBATION' && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 w-7 p-0 text-orange-500 hover:text-orange-700"
+                                    onClick={() => { setProbEmp(emp); setProbAction('CONFIRM'); setProbDays('30'); setProbNotes(''); setProbError(''); }}
+                                    title="Confirm / Extend probation"
+                                  >
+                                    <ShieldCheck className="h-3.5 w-3.5" />
+                                  </Button>
+                                )}
                                 <Button
                                   size="sm"
                                   variant="ghost"
@@ -1360,12 +1380,22 @@ export default function Organization() {
               ) : (
                 <div className="space-y-3">
                   {salRevisions.map((rev: any, i: number) => (
-                    <div key={rev.id} className="border rounded-lg p-3 text-sm">
+                    <div key={rev.id} className={`border rounded-lg p-3 text-sm ${rev.status === 'PENDING' ? 'border-amber-200 bg-amber-50' : ''}`}>
                       <div className="flex items-center justify-between mb-1">
                         <span className="font-medium">
                           {new Date(rev.effectiveDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                         </span>
-                        {i === 0 && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Latest</span>}
+                        <div className="flex items-center gap-1.5">
+                          {rev.status === 'PENDING' && (
+                            <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">Pending Approval</span>
+                          )}
+                          {rev.status === 'APPROVED' && i === 0 && (
+                            <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Latest</span>
+                          )}
+                          {rev.status === 'REJECTED' && (
+                            <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">Rejected</span>
+                          )}
+                        </div>
                       </div>
                       <div className="flex items-center gap-3 text-muted-foreground">
                         <span>₹{rev.oldCtc.toLocaleString('en-IN')}</span>
@@ -1379,10 +1409,149 @@ export default function Organization() {
                       <p className="text-xs text-muted-foreground mt-0.5">
                         By: {rev.revisor?.profile ? fullName(rev.revisor.profile) : 'Admin'}
                       </p>
+                      {/* Approve / Reject buttons for PENDING revisions — only owner or other admin */}
+                      {rev.status === 'PENDING' && (currentUser?.role === 'OWNER' || (currentUser?.role === 'ADMIN' && rev.proposedBy !== currentUser?.id)) && (
+                        <div className="flex gap-2 mt-2 pt-2 border-t border-amber-200">
+                          <Button
+                            size="sm"
+                            className="h-7 text-xs bg-green-600 hover:bg-green-700 text-white"
+                            disabled={revActionId === rev.id}
+                            onClick={async () => {
+                              setRevActionId(rev.id);
+                              try {
+                                await api.patch(`/salary-revisions/${rev.id}/approve`);
+                                const r = await api.get(`/salary-revisions/${salRevEmp!.id}`);
+                                setSalRevisions(r.data);
+                                queryClient.invalidateQueries({ queryKey: ['employees'] });
+                              } catch { alert('Failed to approve revision'); }
+                              finally { setRevActionId(''); }
+                            }}
+                          >
+                            {revActionId === rev.id ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Check className="h-3 w-3 mr-1" />}
+                            Approve
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs border-red-300 text-red-600 hover:bg-red-50"
+                            disabled={revActionId === rev.id}
+                            onClick={async () => {
+                              setRevActionId(rev.id);
+                              try {
+                                await api.patch(`/salary-revisions/${rev.id}/reject`);
+                                const r = await api.get(`/salary-revisions/${salRevEmp!.id}`);
+                                setSalRevisions(r.data);
+                              } catch { alert('Failed to reject revision'); }
+                              finally { setRevActionId(''); }
+                            }}
+                          >
+                            <X className="h-3 w-3 mr-1" />
+                            Reject
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
               )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ── Probation Confirm / Extend Modal ── */}
+      {probEmp && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <Card className="w-full max-w-sm">
+            <CardHeader>
+              <div className="flex items-start justify-between">
+                <div>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <ShieldCheck className="h-4 w-4 text-orange-500" />
+                    Probation Review
+                  </CardTitle>
+                  <CardDescription>{fullName(probEmp.profile)} ({probEmp.profile?.employeeId})</CardDescription>
+                </div>
+                <button className="text-muted-foreground hover:text-foreground" onClick={() => setProbEmp(null)}>✕</button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Action selector */}
+              <div className="flex gap-2">
+                <button
+                  className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${probAction === 'CONFIRM' ? 'bg-green-600 text-white border-green-600' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                  onClick={() => setProbAction('CONFIRM')}
+                >
+                  Confirm Probation
+                </button>
+                <button
+                  className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${probAction === 'EXTEND' ? 'bg-orange-500 text-white border-orange-500' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                  onClick={() => setProbAction('EXTEND')}
+                >
+                  Extend Probation
+                </button>
+              </div>
+
+              {probAction === 'CONFIRM' && (
+                <p className="text-sm text-muted-foreground bg-green-50 border border-green-200 rounded-md p-3">
+                  Employee will be moved to <strong>Regular Full-Time</strong> status immediately.
+                </p>
+              )}
+
+              {probAction === 'EXTEND' && (
+                <div className="space-y-1.5">
+                  <Label>Extend by (days)</Label>
+                  <Input
+                    type="number"
+                    min="1"
+                    max="365"
+                    value={probDays}
+                    onChange={(e) => setProbDays(e.target.value)}
+                    placeholder="e.g. 30"
+                  />
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <Label>Notes (optional)</Label>
+                <textarea
+                  value={probNotes}
+                  onChange={(e) => setProbNotes(e.target.value)}
+                  placeholder="Reason for this decision..."
+                  className="w-full border rounded-md px-3 py-2 text-sm min-h-[70px] resize-y"
+                />
+              </div>
+
+              {probError && <p className="text-sm text-red-600">{probError}</p>}
+
+              <div className="flex gap-2">
+                <Button
+                  className="flex-1"
+                  style={{ backgroundColor: probAction === 'CONFIRM' ? '#16a34a' : '#f97316' }}
+                  disabled={probSaving || (probAction === 'EXTEND' && (!probDays || Number(probDays) < 1))}
+                  onClick={async () => {
+                    setProbSaving(true);
+                    setProbError('');
+                    try {
+                      await api.patch(`/employees/${probEmp.id}/confirm-probation`, {
+                        action:        probAction,
+                        extensionDays: probAction === 'EXTEND' ? Number(probDays) : undefined,
+                        notes:         probNotes || undefined,
+                      });
+                      setProbEmp(null);
+                      queryClient.invalidateQueries({ queryKey: ['employees'] });
+                    } catch (err: any) {
+                      setProbError(err?.response?.data?.error ?? 'Failed to update probation status');
+                    } finally {
+                      setProbSaving(false);
+                    }
+                  }}
+                >
+                  {probSaving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                  {probAction === 'CONFIRM' ? 'Confirm as Regular Employee' : 'Extend Probation'}
+                </Button>
+                <Button variant="outline" onClick={() => setProbEmp(null)}>Cancel</Button>
+              </div>
             </CardContent>
           </Card>
         </div>

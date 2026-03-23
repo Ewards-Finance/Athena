@@ -395,6 +395,8 @@ router.put('/:id([a-z0-9]+)', async (req: AuthRequest, res: Response) => {
             oldCtc:        oldCtcSnapshot,
             newCtc:        annualCtc,
             revisedBy:     requestingUser.id,
+            proposedBy:    requestingUser.id,
+            status:        'APPROVED', // direct CTC update by admin = auto-approved
           },
         }).catch((e) => console.error('Salary revision log error (non-fatal):', e));
       }
@@ -756,6 +758,123 @@ router.post('/import', authorize(['ADMIN']), (req: AuthRequest, res: Response) =
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+});
+
+// PATCH /api/employees/:id/confirm-probation — Admin/Manager confirms or extends probation
+router.patch('/:id([a-z0-9]+)/confirm-probation', authorize(['ADMIN', 'MANAGER']), async (req: AuthRequest, res: Response) => {
+  const { id } = req.params;
+
+  // Cannot act on your own probation
+  if (req.user!.id === id) {
+    res.status(403).json({ error: 'You cannot act on your own probation' });
+    return;
+  }
+
+  const parsed = z.object({
+    action:        z.enum(['CONFIRM', 'EXTEND']),
+    extensionDays: z.number().int().min(1).max(365).optional(),
+    notes:         z.string().optional(),
+  }).safeParse(req.body);
+
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const employee = await prisma.user.findUnique({
+      where: { id },
+      include: { profile: { select: { firstName: true, lastName: true, employeeId: true, dateOfJoining: true } } },
+    });
+    if (!employee) { res.status(404).json({ error: 'Employee not found' }); return; }
+    if (employee.employmentStatus !== 'PROBATION') {
+      res.status(400).json({ error: 'Employee is not on probation' });
+      return;
+    }
+
+    const { action, extensionDays, notes } = parsed.data;
+    const empName = employee.profile
+      ? `${employee.profile.firstName} ${employee.profile.lastName} (${employee.profile.employeeId})`
+      : id;
+
+    if (action === 'CONFIRM') {
+      await prisma.user.update({
+        where: { id },
+        data:  { employmentStatus: 'REGULAR_FULL_TIME' },
+      });
+
+      await createAuditLog({
+        actorId:  req.user!.id,
+        action:   'PROBATION_CONFIRMED',
+        entity:   'User',
+        entityId: id,
+        subjectEntity: 'User',
+        subjectId: id,
+        subjectLabel: empName,
+        oldValues: { employmentStatus: 'PROBATION' },
+        newValues: { employmentStatus: 'REGULAR_FULL_TIME', notes: notes ?? null },
+        changeSource: 'WEB',
+      });
+
+      // Notify the employee
+      await prisma.notification.create({
+        data: {
+          userId:  id,
+          type:    'PROBATION_CONFIRMED',
+          title:   'Probation Confirmed',
+          message: 'Congratulations! Your probation period has been completed and you are now a regular employee.',
+          link:    '/profile',
+        },
+      });
+
+      res.json({ message: 'Probation confirmed. Employee is now REGULAR_FULL_TIME.' });
+
+    } else {
+      // EXTEND — update dateOfJoining forward so probation end is pushed out
+      if (!extensionDays) {
+        res.status(400).json({ error: 'extensionDays is required for EXTEND action' });
+        return;
+      }
+
+      const currentJoining = employee.profile?.dateOfJoining ?? new Date();
+      const newJoining = new Date(currentJoining);
+      newJoining.setDate(newJoining.getDate() + extensionDays);
+
+      await prisma.profile.update({
+        where: { userId: id },
+        data:  { dateOfJoining: newJoining },
+      });
+
+      await createAuditLog({
+        actorId:  req.user!.id,
+        action:   'PROBATION_EXTENDED',
+        entity:   'User',
+        entityId: id,
+        subjectEntity: 'User',
+        subjectId: id,
+        subjectLabel: empName,
+        oldValues: { dateOfJoining: currentJoining },
+        newValues: { dateOfJoining: newJoining, extensionDays, notes: notes ?? null },
+        changeSource: 'WEB',
+      });
+
+      // Notify the employee
+      await prisma.notification.create({
+        data: {
+          userId:  id,
+          type:    'PROBATION_EXTENDED',
+          title:   'Probation Extended',
+          message: `Your probation period has been extended by ${extensionDays} day(s).${notes ? ` Note: ${notes}` : ''}`,
+          link:    '/profile',
+        },
+      });
+
+      res.json({ message: `Probation extended by ${extensionDays} day(s).`, newJoining });
+    }
+  } catch (err) {
+    console.error('Confirm probation error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 export default router;

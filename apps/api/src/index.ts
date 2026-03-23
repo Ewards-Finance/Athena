@@ -509,7 +509,62 @@ app.listen(Number(PORT), '0.0.0.0', () => {
     }
   });
 
-  console.log('⏰ Cron jobs active: comp-off expiry (1AM), doc expiry (6AM), probation alert (7AM), travel proof reminder (8AM), overdue clearance (9AM), policy ack reminder (10AM), travel proof missing (12:05AM)');
+  // ── Auto-deactivate employees on last working day (daily at 12:01 AM) ───────
+  cron.schedule('1 0 * * *', async () => {
+    try {
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      yesterday.setHours(0, 0, 0, 0);
+      const yesterdayEnd = new Date(yesterday);
+      yesterdayEnd.setHours(23, 59, 59, 999);
+
+      // Find exits where lastWorkingDate was yesterday and not cancelled
+      const exitsToProcess = await prisma.exitRequest.findMany({
+        where: {
+          lastWorkingDate: { gte: yesterday, lte: yesterdayEnd },
+          status: { not: 'CANCELLED' },
+        },
+        include: {
+          user: { select: { id: true, isActive: true, profile: { select: { firstName: true, lastName: true } } } },
+        },
+      });
+
+      if (exitsToProcess.length > 0) {
+        const admins = await prisma.user.findMany({
+          where: { role: { in: ['ADMIN', 'OWNER'] }, isActive: true },
+          select: { id: true },
+        });
+
+        for (const exit of exitsToProcess) {
+          if (!exit.user.isActive) continue; // already deactivated
+
+          await prisma.user.update({
+            where: { id: exit.userId },
+            data: { isActive: false, employmentStatus: 'INACTIVE' },
+          });
+
+          const empName = exit.user.profile
+            ? `${exit.user.profile.firstName} ${exit.user.profile.lastName}`
+            : 'An employee';
+
+          for (const admin of admins) {
+            await createNotification({
+              userId: admin.id,
+              type: 'EMPLOYEE_DEACTIVATED',
+              title: 'Employee Auto-Deactivated',
+              message: `${empName}'s last working day was yesterday. Their account has been automatically deactivated.`,
+              link: '/exit',
+            });
+          }
+          console.log(`[cron] Auto-deactivated: ${empName} (${exit.userId})`);
+        }
+      }
+    } catch (err) {
+      console.error('[cron] Auto-deactivate error:', err);
+    }
+  });
+
+  console.log('⏰ Cron jobs active: auto-deactivate (12:01AM), comp-off expiry (1AM), doc expiry (6AM), probation alert (7AM), travel proof reminder (8AM), overdue clearance (9AM), policy ack reminder (10AM), travel proof missing (12:05AM)');
 });
 
 export default app;

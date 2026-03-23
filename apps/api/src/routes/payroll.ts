@@ -31,7 +31,8 @@ import { Router, Response }          from 'express';
 import { prisma } from '../lib/prisma';
 import { z }                         from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
-import { computePayslipEntry, countWorkingDays, ComponentSnapshot, SATURDAY_FREE_OFF, UNLIMITED_LEAVE_TYPES, computeProRatedCtc, computeArrears } from '../lib/payrollEngine';
+import { computePayslipEntry, countWorkingDays, ComponentSnapshot, UNLIMITED_LEAVE_TYPES, computeProRatedCtc, computeArrears } from '../lib/payrollEngine';
+import { getNumericRule as getPolicyNumeric } from '../lib/policyEngine';
 import { generatePayrollExcel } from '../lib/excelExport';
 import { sendPayslipReadyEmail } from '../lib/email';
 import { createAuditLog } from '../lib/audit';
@@ -387,6 +388,10 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
       }
     }
 
+    // Read Saturday policy from policy engine (before the Saturday loop)
+    const satFreeFulltime = await getPolicyNumeric(null, 'sat_free_fulltime', 3);
+    const satFreeIntern   = await getPolicyNumeric(null, 'sat_free_intern',   2);
+
     // ── Saturday working policy + declared WFH compliance ──────────────────
     // See payrollEngine.ts → SATURDAY POLICY comment for full explanation.
     //
@@ -457,7 +462,7 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
       const worklogs    = worklogDatesMap[emp.userId]    ?? new Set<string>();
       const attendance  = attendanceDatesMap[emp.userId] ?? new Set<string>();
       const empType     = (emp.employmentType === 'INTERN' ? 'INTERN' : 'FULL_TIME') as 'FULL_TIME' | 'INTERN';
-      const freeOff     = SATURDAY_FREE_OFF[empType];
+      const freeOff     = empType === 'INTERN' ? satFreeIntern : satFreeFulltime;
 
       // A Saturday is "worked" if employee has a worklog OR a fingerprint record
       const workedRegularSats = regularSaturdays.filter((s) => {
@@ -1073,6 +1078,68 @@ router.get('/runs/:id/export', authorize(['ADMIN']), async (req: AuthRequest, re
     res.send(Buffer.from(exportBuffer as ArrayBuffer));
   } catch (err) {
     console.error('Export run error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/payroll/runs/:id/bank-export — XLSX with Name, EmpID, Account, IFSC, NetPay (FINALIZED only)
+router.get('/runs/:id/bank-export', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+  try {
+    const run = await prisma.payrollRun.findUnique({
+      where:   { id: req.params.id },
+      include: { entries: { include: { user: { include: { profile: true } } } } },
+    });
+    if (!run) { res.status(404).json({ error: 'Run not found' }); return; }
+    if (run.status !== 'FINALIZED') {
+      res.status(400).json({ error: 'Bank transfer sheet is only available for FINALIZED runs' });
+      return;
+    }
+
+    const ExcelJS = (await import('exceljs')).default;
+    const workbook = new ExcelJS.Workbook();
+    const sheet    = workbook.addWorksheet('Bank Transfer');
+
+    sheet.columns = [
+      { header: 'Employee Name',   key: 'name',       width: 28 },
+      { header: 'Employee ID',     key: 'empId',      width: 14 },
+      { header: 'Bank Account No', key: 'account',    width: 22 },
+      { header: 'IFSC Code',       key: 'ifsc',       width: 14 },
+      { header: 'Net Payable (₹)', key: 'netPay',     width: 16 },
+    ];
+
+    // Header row styling
+    const headerRow = sheet.getRow(1);
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF361963' } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+    headerRow.height = 20;
+
+    for (const entry of run.entries) {
+      const profile = entry.user?.profile;
+      const name    = profile ? `${profile.firstName} ${profile.lastName}` : entry.userId;
+      sheet.addRow({
+        name,
+        empId:   profile?.employeeId     ?? '',
+        account: profile?.bankAccountNumber ?? '',
+        ifsc:    profile?.ifscCode        ?? '',
+        netPay:  entry.netPay,
+      });
+    }
+
+    // Auto-filter
+    sheet.autoFilter = { from: 'A1', to: 'E1' };
+
+    const MONTH_NAMES_FULL = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
+    const fileName = `BankTransfer_${MONTH_NAMES_FULL[run.month]}_${run.year}.xlsx`;
+    const buffer   = await workbook.xlsx.writeBuffer();
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(Buffer.from(buffer));
+  } catch (err) {
+    console.error('Bank export error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
