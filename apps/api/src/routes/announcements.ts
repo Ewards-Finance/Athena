@@ -9,7 +9,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { z }                         from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
-import { sendAnnouncementEmail } from '../lib/email';
+import { createNotifications } from '../lib/notify';
 
 const router  = Router();
 
@@ -49,20 +49,19 @@ router.post('/', authorize(['ADMIN']), async (req: AuthRequest, res: Response) =
     });
     res.status(201).json(item);
 
-    // Batch email to all active employees (fire and forget)
+    // Notify all active employees (in-app + email via createNotifications)
     prisma.user.findMany({
-      where:  { isActive: true },
-      select: { email: true, profile: { select: { firstName: true } } },
+      where:  { isActive: true, id: { not: req.user!.id } },
+      select: { id: true },
     }).then((users) => {
-      for (const u of users) {
-        if (!u.email) continue;
-        sendAnnouncementEmail({
-          to:        u.email,
-          firstName: u.profile?.firstName ?? 'Employee',
-          title:     parsed.data.title,
-          body:      parsed.data.body,
-        }).catch(() => {});
-      }
+      if (!users.length) return;
+      createNotifications(users.map((u) => ({
+        userId:  u.id,
+        type:    'ANNOUNCEMENT',
+        title:   parsed.data.title,
+        message: parsed.data.body,
+        link:    '/holidays', // announcements are visible on the dashboard
+      })));
     }).catch(() => {});
 
   } catch (err) {

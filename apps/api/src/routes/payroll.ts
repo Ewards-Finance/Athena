@@ -34,7 +34,6 @@ import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { computePayslipEntry, countWorkingDays, ComponentSnapshot, UNLIMITED_LEAVE_TYPES, computeProRatedCtc, computeArrears } from '../lib/payrollEngine';
 import { getNumericRule as getPolicyNumeric } from '../lib/policyEngine';
 import { generatePayrollExcel } from '../lib/excelExport';
-import { sendPayslipReadyEmail } from '../lib/email';
 import { createAuditLog } from '../lib/audit';
 
 const MONTH_NAMES = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -912,24 +911,6 @@ router.post('/runs/:id/finalize', authorize(['OWNER']), async (req: AuthRequest,
       );
     }
     const [updated] = await prisma.$transaction(txOps);
-
-    // Send payslip ready emails (fire and forget — never block the response)
-    prisma.payslipEntry.findMany({
-      where:   { payrollRunId: run.id },
-      include: { user: { select: { email: true, profile: { select: { firstName: true } } } } },
-    }).then((entries) => {
-      const monthName = MONTH_NAMES[run.month] ?? String(run.month);
-      for (const entry of entries) {
-        if (!entry.user.email) continue;
-        sendPayslipReadyEmail({
-          to:        entry.user.email,
-          firstName: entry.user.profile?.firstName ?? 'Employee',
-          month:     monthName,
-          year:      run.year,
-          netPay:    entry.netPay,
-        }).catch(() => {});
-      }
-    }).catch(() => {});
 
     res.json(updated);
   } catch (err) {

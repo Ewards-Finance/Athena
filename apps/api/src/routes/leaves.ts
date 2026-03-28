@@ -15,10 +15,9 @@ import { prisma } from '../lib/prisma';
 import { z }                        from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { getOrCreateBalances }      from './leaveBalance';
-import { createNotification }       from '../lib/notify';
+import { createNotification, createNotifications } from '../lib/notify';
 import { createAuditLog }           from '../lib/audit';
 import { getFYYear }                from '../lib/fyUtils';
-import { sendLeaveApprovedEmail, sendLeaveRejectedEmail } from '../lib/email';
 import { UNLIMITED_LEAVE_TYPES } from '../lib/payrollEngine';
 import { getBooleanRule } from '../lib/policyEngine';
 import { isDelegateForEmployee } from '../lib/delegation';
@@ -346,21 +345,44 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
       } as any,
     });
 
-    // Notify the reporting manager (if assigned)
+    // Notify the reporting manager and all HR Admins
+    const emp = await prisma.profile.findUnique({
+      where:  { userId: req.user!.id },
+      select: { firstName: true, lastName: true },
+    });
+    const empName = emp ? `${emp.firstName} ${emp.lastName}` : 'An employee';
+    const daysStr = totalDays === 0.5 ? 'half day' : `${totalDays} day${totalDays !== 1 ? 's' : ''}`;
+    const leaveLink = leaveType === 'TRAVELLING' ? '/travel-proof' : '/leaves';
+
     if (profile?.managerId) {
-      const emp = await prisma.profile.findUnique({
-        where:  { userId: req.user!.id },
-        select: { firstName: true, lastName: true },
-      });
-      const empName = emp ? `${emp.firstName} ${emp.lastName}` : 'An employee';
-      const daysStr = totalDays === 0.5 ? 'half day' : `${totalDays} day${totalDays !== 1 ? 's' : ''}`;
       await createNotification({
         userId:  profile.managerId,
         type:    'LEAVE_APPLIED',
         title:   'New Leave Request',
         message: `${empName} has applied for ${leaveType} leave (${daysStr}).`,
-        link:    leaveType === 'TRAVELLING' ? '/travel-proof' : '/leaves',
+        link:    leaveLink,
       });
+    }
+
+    // Notify all Admins (excluding the employee themselves if they are an admin)
+    const admins = await prisma.user.findMany({
+      where: { role: { in: ['ADMIN', 'OWNER'] }, isActive: true, id: { not: req.user!.id } },
+      select: { id: true },
+    });
+    // Exclude manager if already notified above to avoid duplicates
+    const adminIds = admins
+      .map((a) => a.id)
+      .filter((id) => id !== profile?.managerId);
+    if (adminIds.length > 0) {
+      await createNotifications(
+        adminIds.map((id) => ({
+          userId:  id,
+          type:    'LEAVE_APPLIED',
+          title:   'New Leave Request',
+          message: `${empName} has applied for ${leaveType} leave (${daysStr}).`,
+          link:    leaveLink,
+        }))
+      );
     }
 
     res.status(201).json({
@@ -530,19 +552,6 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
       link:    '/leaves',
     });
 
-    // Email (fire and forget)
-    if (leave.employee?.email) {
-      sendLeaveApprovedEmail({
-        to:        leave.employee.email,
-        firstName: leave.employee.profile?.firstName ?? 'Employee',
-        leaveType: leave.leaveType,
-        startDate: new Date(leave.startDate).toDateString(),
-        endDate:   new Date(leave.endDate).toDateString(),
-        totalDays: leave.totalDays,
-        comment:   comment || undefined,
-      }).catch(() => {});
-    }
-
     res.json(updated);
   } catch (err) {
     console.error('Approve leave error:', err);
@@ -606,19 +615,6 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
       message: `Your ${leave.leaveType} leave request (${leave.totalDays} day${leave.totalDays !== 1 ? 's' : ''}) has been rejected.${comment ? ` Reason: ${comment}` : ''}`,
       link:    '/leaves',
     });
-
-    // Email (fire and forget)
-    if (leave.employee?.email) {
-      sendLeaveRejectedEmail({
-        to:        leave.employee.email,
-        firstName: leave.employee.profile?.firstName ?? 'Employee',
-        leaveType: leave.leaveType,
-        startDate: new Date(leave.startDate).toDateString(),
-        endDate:   new Date(leave.endDate).toDateString(),
-        totalDays: leave.totalDays,
-        comment:   comment || undefined,
-      }).catch(() => {});
-    }
 
     // Audit log
     await createAuditLog({

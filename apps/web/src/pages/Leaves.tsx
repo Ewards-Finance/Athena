@@ -1,9 +1,10 @@
 /**
  * Athena V2 - Leave Management
  *
- * Tab 1 "My Leaves"  — balance bars + apply form + own requests        (all roles)
- * Tab 2 "Team"       — team balances + team requests + approve/reject  (Manager, Admin)
- * Tab 3 "Manage"     — leave policy config + quota overrides           (Admin only)
+ * Tab 1 "My Leaves"     — balance bars + apply form + own requests        (all roles)
+ * Tab 2 "Approvals"    — team leave requests + approve/reject           (Manager, Admin)
+ * Tab 3 "Team Balances"— team leave balances per employee               (Manager, Admin)
+ * Tab 4 "Manage"       — leave policy config + quota overrides          (Admin only)
  */
 
 import { Fragment, useEffect, useRef, useState } from 'react';
@@ -137,7 +138,7 @@ export default function Leaves() {
   const isManagerOrAdmin = user?.role === 'ADMIN' || user?.role === 'MANAGER';
   const isAdmin          = user?.role === 'ADMIN';
 
-  type Tab = 'my' | 'team' | 'manage';
+  type Tab = 'my' | 'approvals' | 'team-balances' | 'manage';
   const [tab, setTab] = useState<Tab>('my');
 
   // ── Data ──
@@ -443,9 +444,10 @@ export default function Leaves() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   const tabs: { key: Tab; label: string; show: boolean }[] = [
-    { key: 'my',     label: 'My Leaves', show: true },
-    { key: 'team',   label: 'Team',      show: isManagerOrAdmin },
-    { key: 'manage', label: 'Manage',    show: isAdmin },
+    { key: 'my',             label: 'My Leaves',     show: true },
+    { key: 'approvals',      label: 'Approvals',     show: isManagerOrAdmin },
+    { key: 'team-balances',  label: 'Team Balances', show: isManagerOrAdmin },
+    { key: 'manage',         label: 'Manage',        show: isAdmin },
   ];
 
   return (
@@ -732,8 +734,8 @@ export default function Leaves() {
         </div>
       )}
 
-      {/* ── TAB: TEAM ──────────────────────────────────────────────────────── */}
-      {tab === 'team' && isManagerOrAdmin && (
+      {/* ── TAB: APPROVALS ─────────────────────────────────────────────────── */}
+      {tab === 'approvals' && isManagerOrAdmin && (
         <div className="space-y-5">
 
           {/* Reject modal (shared) */}
@@ -754,6 +756,49 @@ export default function Leaves() {
               </div>
             </div>
           )}
+
+          {/* Team leave requests */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">
+                {isAdmin ? 'All Leave Requests' : 'Team Leave Requests'}
+              </CardTitle>
+              <CardDescription>
+                {isAdmin ? 'All pending and past leave requests' : 'Requests from your direct reports'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {loading ? (
+                <div className="space-y-2">{[1,2,3].map((i) => <div key={i} className="h-16 rounded-xl bg-muted animate-pulse" />)}</div>
+              ) : teamLeaves.length === 0 ? (
+                <Empty icon={CalendarDays} text="No team leave requests." />
+              ) : (
+                <div className="space-y-3">
+                  {teamLeaves.map((leave) => (
+                    <LeaveRow
+                      key={leave.id} leave={leave}
+                      showEmployee={true}
+                      canAction={leave.status === 'PENDING'}
+                      canWithdraw={false}
+                      actionLoading={actionLoading}
+                      onApprove={handleApprove}
+                      onRejectClick={(id) => { setRejectId(id); setRejectComment(''); }}
+                      onWithdraw={handleWithdraw}
+                      isAdmin={isAdmin}
+                      onChangeType={handleChangeType}
+                      policies={policies}
+                    />
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ── TAB: TEAM BALANCES ──────────────────────────────────────────────── */}
+      {tab === 'team-balances' && isManagerOrAdmin && (
+        <div className="space-y-5">
 
           {/* Team balance table */}
           <Card>
@@ -808,43 +853,6 @@ export default function Leaves() {
                       ))}
                     </tbody>
                   </table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Team leave requests */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">
-                {isAdmin ? 'All Leave Requests' : 'Team Leave Requests'}
-              </CardTitle>
-              <CardDescription>
-                {isAdmin ? 'All pending and past leave requests' : 'Requests from your direct reports'}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {loading ? (
-                <div className="space-y-2">{[1,2,3].map((i) => <div key={i} className="h-16 rounded-xl bg-muted animate-pulse" />)}</div>
-              ) : teamLeaves.length === 0 ? (
-                <Empty icon={CalendarDays} text="No team leave requests." />
-              ) : (
-                <div className="space-y-3">
-                  {teamLeaves.map((leave) => (
-                    <LeaveRow
-                      key={leave.id} leave={leave}
-                      showEmployee={true}
-                      canAction={leave.status === 'PENDING'}
-                      canWithdraw={false}
-                      actionLoading={actionLoading}
-                      onApprove={handleApprove}
-                      onRejectClick={(id) => { setRejectId(id); setRejectComment(''); }}
-                      onWithdraw={handleWithdraw}
-                      isAdmin={isAdmin}
-                      onChangeType={handleChangeType}
-                      policies={policies}
-                    />
-                  ))}
                 </div>
               )}
             </CardContent>

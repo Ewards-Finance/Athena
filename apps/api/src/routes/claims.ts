@@ -14,7 +14,6 @@ import { prisma } from '../lib/prisma';
 import { z }                         from 'zod';
 import { authenticate, authorize, AuthRequest } from '../middleware/auth';
 import { createNotifications, createNotification } from '../lib/notify';
-import { sendClaimStatusEmail } from '../lib/email';
 import { isDelegateForEmployee } from '../lib/delegation';
 import { createAuditLog } from '../lib/audit';
 
@@ -73,25 +72,43 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       },
     });
 
-    // Notify all admins about the new claim
-    const emp = await prisma.profile.findUnique({
+    // Notify the reporting manager and all Admins about the new claim
+    const empProfile = await prisma.profile.findUnique({
       where:  { userId: req.user!.id },
-      select: { firstName: true, lastName: true },
+      select: { firstName: true, lastName: true, managerId: true },
     });
-    const empName = emp ? `${emp.firstName} ${emp.lastName}` : 'An employee';
-    const admins = await prisma.user.findMany({
-      where:  { role: 'ADMIN', isActive: true, id: { not: req.user!.id } },
-      select: { id: true },
-    });
-    await createNotifications(
-      admins.map((a) => ({
-        userId:  a.id,
+    const empName = empProfile ? `${empProfile.firstName} ${empProfile.lastName}` : 'An employee';
+
+    // Notify reporting manager (if assigned)
+    if (empProfile?.managerId) {
+      await createNotification({
+        userId:  empProfile.managerId,
         type:    'CLAIM_SUBMITTED',
         title:   'New Reimbursement Claim',
         message: `${empName} submitted a ${parsed.data.category} claim for ₹${parsed.data.amount}.`,
         link:    '/claims',
-      }))
-    );
+      });
+    }
+
+    // Notify all Admins (exclude the employee and the manager already notified above)
+    const admins = await prisma.user.findMany({
+      where:  { role: { in: ['ADMIN', 'OWNER'] }, isActive: true, id: { not: req.user!.id } },
+      select: { id: true },
+    });
+    const adminIds = admins
+      .map((a) => a.id)
+      .filter((id) => id !== empProfile?.managerId);
+    if (adminIds.length > 0) {
+      await createNotifications(
+        adminIds.map((id) => ({
+          userId:  id,
+          type:    'CLAIM_SUBMITTED',
+          title:   'New Reimbursement Claim',
+          message: `${empName} submitted a ${parsed.data.category} claim for ₹${parsed.data.amount}.`,
+          link:    '/claims',
+        }))
+      );
+    }
 
     res.status(201).json(claim);
   } catch (err) {
@@ -153,11 +170,6 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
       link:    '/claims',
     });
 
-    // Email (fire and forget)
-    prisma.user.findUnique({ where: { id: claim.employeeId }, select: { email: true, profile: { select: { firstName: true } } } })
-      .then((u) => { if (u?.email) sendClaimStatusEmail({ to: u.email, firstName: u.profile?.firstName ?? 'Employee', category: claim.category, amount: claim.amount, status: 'APPROVED' }).catch(() => {}); })
-      .catch(() => {});
-
     res.json(updated);
   } catch (err) {
     console.error('Approve claim error:', err);
@@ -198,11 +210,6 @@ router.patch('/:id/pay', authorize(['ADMIN']), async (req: AuthRequest, res: Res
       message: `Your ${claim.category} claim for ₹${claim.amount} has been marked as paid.${note ? ` Note: ${note}` : ''}`,
       link:    '/claims',
     });
-
-    // Email (fire and forget)
-    prisma.user.findUnique({ where: { id: claim.employeeId }, select: { email: true, profile: { select: { firstName: true } } } })
-      .then((u) => { if (u?.email) sendClaimStatusEmail({ to: u.email, firstName: u.profile?.firstName ?? 'Employee', category: claim.category, amount: claim.amount, status: 'PAID', note: note || undefined }).catch(() => {}); })
-      .catch(() => {});
 
     res.json(updated);
   } catch (err) {
@@ -257,11 +264,6 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
       message: `Your ${claim.category} claim for ₹${claim.amount} has been rejected.`,
       link:    '/claims',
     });
-
-    // Email (fire and forget)
-    prisma.user.findUnique({ where: { id: claim.employeeId }, select: { email: true, profile: { select: { firstName: true } } } })
-      .then((u) => { if (u?.email) sendClaimStatusEmail({ to: u.email, firstName: u.profile?.firstName ?? 'Employee', category: claim.category, amount: claim.amount, status: 'REJECTED' }).catch(() => {}); })
-      .catch(() => {});
 
     res.json(updated);
   } catch (err) {

@@ -144,3 +144,22 @@ export async function sendAnnouncementEmail(opts: {
     </div>
   `));
 }
+
+// ─── Generic notification email (mirrors every in-app notification) ───────────
+
+export async function sendNotificationEmail(opts: {
+  to: string; subject: string; title: string; message: string; link?: string;
+}): Promise<void> {
+  const linkHtml = opts.link
+    ? `<p style="margin-top: 20px;">
+         <a href="${opts.link}" style="background: #361963; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-size: 14px; display: inline-block;">
+           View in Athena
+         </a>
+       </p>`
+    : '';
+  await sendEmail(opts.to, opts.subject, wrap(`
+    <p style="color: #374151; font-size: 17px; font-weight: 600; margin: 0 0 10px 0;">${opts.title}</p>
+    <p style="color: #4b5563; margin: 0 0 4px 0;">${opts.message}</p>
+    ${linkHtml}
+  `));
+}
