@@ -150,9 +150,11 @@ export async function sendAnnouncementEmail(opts: {
 export async function sendNotificationEmail(opts: {
   to: string; subject: string; title: string; message: string; link?: string;
 }): Promise<void> {
-  const linkHtml = opts.link
+  const baseUrl = (process.env.FRONTEND_URL ?? '').replace(/\/$/, '');
+  const fullLink = opts.link ? `${baseUrl}${opts.link}` : null;
+  const linkHtml = fullLink
     ? `<p style="margin-top: 20px;">
-         <a href="${opts.link}" style="background: #361963; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-size: 14px; display: inline-block;">
+         <a href="${fullLink}" style="background: #361963; color: white; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-size: 14px; display: inline-block;">
            View in Athena
          </a>
        </p>`

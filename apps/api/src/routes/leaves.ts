@@ -86,16 +86,29 @@ async function calcBusinessDays(start: Date, end: Date): Promise<number> {
 }
 
 /**
- * Sandwich Rule: If leave days are adjacent to weekends/holidays,
- * those weekends/holidays get "sandwiched" and count as leave days.
+ * Sandwich Rule:
  *
- * Example: Leave on Friday + Monday → Saturday & Sunday are sandwiched = 4 total days.
- * Example: Leave on Thursday + Friday, Monday is holiday → Sat+Sun+Mon sandwiched = 6 total.
+ * A block of non-working days gets sandwiched when there is a FULL day leave
+ * on BOTH sides of that block. The two leaves can be in the same request
+ * (multi-day leave) OR in separate requests (two single-day leaves with
+ * non-working days in between).
+ *
+ * Non-working days = weekends + declared holidays + DeclaredWFH days.
+ * Only an actual office day (half or full) breaks a sandwich.
+ *
+ * Examples:
+ *   Mon(full)→Thu(full) in ONE request, Tue+Wed holidays → 2+2=4 days
+ *   Mon(full) single + existing Thu(full) single, Tue+Wed holidays → Thu gets +2
+ *   Mon(half)→Thu(full) → no sandwich (start is not full)
  */
 async function checkSandwichRule(
   start: Date,
   end: Date,
   leaveType: string,
+  durationType: string,
+  startDayType: string | undefined,
+  endDayType: string | undefined,
+  employeeId: string,
 ): Promise<{ sandwichDays: number; sandwichDates: string[]; warning: string }> {
   const empty = { sandwichDays: 0, sandwichDates: [], warning: '' };
 
@@ -105,61 +118,94 @@ async function checkSandwichRule(
   const enabled = await getBooleanRule(null, 'sandwich_rule_enabled', true);
   if (!enabled) return empty;
 
-  // Fetch holidays in an extended window (7 days before start to 7 days after end)
-  const windowStart = new Date(start);
-  windowStart.setDate(windowStart.getDate() - 7);
-  const windowEnd = new Date(end);
-  windowEnd.setDate(windowEnd.getDate() + 7);
+  // By the time we get here, startDayType/endDayType are already normalised at the
+  // call site (singleDayType used for both sides on SINGLE leaves).
+  const effectiveStartFull = startDayType === 'FULL';
+  const effectiveEndFull   = endDayType === 'FULL';
 
-  const holidays = await prisma.holiday.findMany({
-    where: { date: { gte: windowStart, lte: windowEnd } },
-    select: { date: true },
-  });
+  // Fetch holidays + DeclaredWFH in a wide window (14 days either side)
+  const windowStart = new Date(start); windowStart.setDate(windowStart.getDate() - 14);
+  const windowEnd   = new Date(end);   windowEnd.setDate(windowEnd.getDate() + 14);
+
+  const [holidays, wfhDays] = await Promise.all([
+    prisma.holiday.findMany({ where: { date: { gte: windowStart, lte: windowEnd } }, select: { date: true } }),
+    prisma.declaredWFH.findMany({ where: { date: { gte: windowStart, lte: windowEnd } }, select: { date: true } }),
+  ]);
   const holidaySet = new Set(holidays.map(h => h.date.toISOString().split('T')[0]));
+  const wfhSet     = new Set(wfhDays.map(w => w.date.toISOString().split('T')[0]));
 
   const isNonWorking = (d: Date): boolean => {
     const dow = d.getDay();
-    const ds = d.toISOString().split('T')[0];
-    return dow === 0 || dow === 6 || holidaySet.has(ds);
+    const ds  = d.toISOString().split('T')[0];
+    return dow === 0 || dow === 6 || holidaySet.has(ds) || wfhSet.has(ds);
   };
 
-  // Walk backwards from start to find contiguous non-working days before
-  const sandwichDates: string[] = [];
-  const beforeDates: Date[] = [];
-  const cur1 = new Date(start);
-  cur1.setDate(cur1.getDate() - 1);
-  while (isNonWorking(cur1)) {
-    beforeDates.push(new Date(cur1));
-    cur1.setDate(cur1.getDate() - 1);
+  // Fetch existing PENDING/APPROVED full-day leaves for this employee (excluding current dates)
+  const existingLeaves = await prisma.leaveRequest.findMany({
+    where: {
+      employeeId,
+      status: { in: ['PENDING', 'APPROVED'] },
+    },
+    select: { startDate: true, endDate: true, durationType: true, singleDayType: true, startDayType: true, endDayType: true },
+  });
+
+  // Build a set of dates that are "full day leave anchors" from existing requests
+  const existingFullLeaveDates = new Set<string>();
+  for (const lv of existingLeaves) {
+    if (lv.durationType === 'SINGLE' && lv.singleDayType === 'FULL') {
+      existingFullLeaveDates.add(lv.startDate.toISOString().split('T')[0]);
+    } else if (lv.durationType === 'MULTIPLE') {
+      if (lv.startDayType === 'FULL') existingFullLeaveDates.add(lv.startDate.toISOString().split('T')[0]);
+      if (lv.endDayType === 'FULL')   existingFullLeaveDates.add(lv.endDate.toISOString().split('T')[0]);
+    }
   }
 
-  // Walk forwards from end to find contiguous non-working days after
-  const afterDates: Date[] = [];
-  const cur2 = new Date(end);
-  cur2.setDate(cur2.getDate() + 1);
-  while (isNonWorking(cur2)) {
-    afterDates.push(new Date(cur2));
-    cur2.setDate(cur2.getDate() + 1);
+  // Helper: walk through a block of contiguous non-working days starting from `from`,
+  // moving in `direction` (+1 or -1). Returns the dates collected and the first
+  // working day found at the end of the block.
+  function walkNonWorkingBlock(from: Date, direction: 1 | -1): { block: string[]; anchorDay: string | null } {
+    const block: string[] = [];
+    const cur = new Date(from);
+    cur.setDate(cur.getDate() + direction);
+    while (isNonWorking(cur) && block.length < 30) {
+      block.push(cur.toISOString().split('T')[0]);
+      cur.setDate(cur.getDate() + direction);
+    }
+    const anchorDay = cur.toISOString().split('T')[0];
+    return { block, anchorDay };
   }
 
-  // Also find non-working gaps WITHIN the leave range
-  const withinDates: Date[] = [];
-  const cur3 = new Date(start);
-  cur3.setDate(cur3.getDate() + 1);
-  while (cur3 < end) {
-    if (isNonWorking(cur3)) withinDates.push(new Date(cur3));
-    cur3.setDate(cur3.getDate() + 1);
+  const sandwichSet = new Set<string>();
+
+  // ── 1. Days WITHIN the leave range (only for MULTIPLE full-full leaves) ────
+  if (durationType === 'MULTIPLE' && effectiveStartFull && effectiveEndFull) {
+    const cur = new Date(start);
+    cur.setDate(cur.getDate() + 1);
+    while (cur < end) {
+      if (isNonWorking(cur)) sandwichSet.add(cur.toISOString().split('T')[0]);
+      cur.setDate(cur.getDate() + 1);
+    }
   }
 
-  // Sandwich logic: non-working days between two leave/working periods are sandwiched
-  // Before: only if there's a leave day on the other side (start)
-  // After: only if there's a leave day on the other side (end)
-  // Within: always sandwiched
-  for (const d of beforeDates) sandwichDates.push(d.toISOString().split('T')[0]);
-  for (const d of afterDates) sandwichDates.push(d.toISOString().split('T')[0]);
-  for (const d of withinDates) sandwichDates.push(d.toISOString().split('T')[0]);
+  // ── 2. Non-working block BEFORE start — check if there's a full leave anchor
+  //       on the working day just before that block ────────────────────────────
+  if (effectiveStartFull) {
+    const { block, anchorDay } = walkNonWorkingBlock(start, -1);
+    if (block.length > 0 && anchorDay && existingFullLeaveDates.has(anchorDay)) {
+      block.forEach(d => sandwichSet.add(d));
+    }
+  }
 
-  sandwichDates.sort();
+  // ── 3. Non-working block AFTER end — check if there's a full leave anchor
+  //       on the working day just after that block ─────────────────────────────
+  if (effectiveEndFull) {
+    const { block, anchorDay } = walkNonWorkingBlock(end, 1);
+    if (block.length > 0 && anchorDay && existingFullLeaveDates.has(anchorDay)) {
+      block.forEach(d => sandwichSet.add(d));
+    }
+  }
+
+  const sandwichDates = Array.from(sandwichSet).sort();
   const count = sandwichDates.length;
 
   if (count === 0) return empty;
@@ -197,10 +243,15 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 });
 
 // GET /api/leaves/pending - Manager/Admin: all leaves awaiting approval
-router.get('/pending', authorize(['ADMIN', 'MANAGER']), async (_req, res: Response) => {
+router.get('/pending', authorize(['ADMIN', 'MANAGER', 'OWNER']), async (req: AuthRequest, res: Response) => {
+  const user = req.user!;
   try {
+    const where =
+      user.role === 'ADMIN' || user.role === 'OWNER'
+        ? { status: 'PENDING' as const }
+        : { status: 'PENDING' as const, managerId: user.id };
     const pending = await prisma.leaveRequest.findMany({
-      where: { status: 'PENDING' },
+      where,
       include: {
         employee: {
           select: {
@@ -253,7 +304,10 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
 
   try {
     // ── Sandwich rule check ───────────────────────────────────────────────
-    const sandwich = await checkSandwichRule(start, end, leaveType);
+    // For SINGLE leaves singleDayType governs both sides; for MULTIPLE use start/endDayType
+    const sandwichStartType = durationType === 'SINGLE' ? singleDayType : startDayType;
+    const sandwichEndType   = durationType === 'SINGLE' ? singleDayType : endDayType;
+    const sandwich = await checkSandwichRule(start, end, leaveType, durationType, sandwichStartType, sandwichEndType, req.user!.id);
     if (sandwich.sandwichDays > 0) {
       totalDays += sandwich.sandwichDays;
     }
@@ -442,6 +496,11 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
     let approvedViaDelegate = false;
     if (req.user!.role === 'MANAGER') {
       approvedViaDelegate = await isDelegateForEmployee(req.user!.id, leave.employeeId);
+      // Manager must be the assigned manager OR an authorised delegate
+      if (leave.managerId !== req.user!.id && !approvedViaDelegate) {
+        res.status(403).json({ error: 'You are not authorised to approve this leave request' });
+        return;
+      }
     }
 
     const year = getFYYear(new Date(leave.startDate));
@@ -598,6 +657,15 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
       return;
     }
 
+    // Manager must be the assigned manager OR an authorised delegate
+    if (req.user!.role === 'MANAGER') {
+      const isDelegate = await isDelegateForEmployee(req.user!.id, leave.employeeId);
+      if (leave.managerId !== req.user!.id && !isDelegate) {
+        res.status(403).json({ error: 'You are not authorised to reject this leave request' });
+        return;
+      }
+    }
+
     const updated = await prisma.leaveRequest.update({
       where: { id },
       data: {
@@ -612,7 +680,7 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
       userId:  leave.employeeId,
       type:    'LEAVE_REJECTED',
       title:   'Leave Rejected',
-      message: `Your ${leave.leaveType} leave request (${leave.totalDays} day${leave.totalDays !== 1 ? 's' : ''}) has been rejected.${comment ? ` Reason: ${comment}` : ''}`,
+      message: `Your ${leave.leaveType} leave request (${leave.totalDays === 0.5 ? 'half day' : `${leave.totalDays} day${leave.totalDays !== 1 ? 's' : ''}`}) has been rejected.${comment ? ` Reason: ${comment}` : ''}`,
       link:    '/leaves',
     });
 
@@ -733,6 +801,24 @@ router.delete('/:id', async (req: AuthRequest, res: Response) => {
     }
 
     await prisma.$transaction(ops);
+
+    // Notify manager if the cancelled leave was already approved
+    if (leave.status === 'APPROVED' && leave.managerId) {
+      const cancelledBy = await prisma.profile.findUnique({
+        where: { userId: user.id },
+        select: { firstName: true, lastName: true },
+      });
+      const name = cancelledBy ? `${cancelledBy.firstName} ${cancelledBy.lastName}` : 'An employee';
+      const daysStr = leave.totalDays === 0.5 ? 'half day' : `${leave.totalDays} day${leave.totalDays !== 1 ? 's' : ''}`;
+      await createNotification({
+        userId:  leave.managerId,
+        type:    'LEAVE_CANCELLED',
+        title:   'Approved Leave Cancelled',
+        message: `${name} has cancelled their approved ${leave.leaveType} leave (${daysStr}).`,
+        link:    '/leaves',
+      });
+    }
+
     res.json({ message: 'Leave cancelled successfully' });
   } catch (err) {
     console.error('Cancel leave error:', err);

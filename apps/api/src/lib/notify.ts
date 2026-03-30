@@ -27,9 +27,10 @@ export async function createNotification(payload: NotificationPayload): Promise<
     console.error('[notify] Failed to create notification:', err);
   }
   // Fire email — fully async, never blocks the caller
-  prisma.user.findUnique({ where: { id: payload.userId }, select: { email: true } })
+  // OWNER accounts receive in-app notifications only, no emails
+  prisma.user.findUnique({ where: { id: payload.userId }, select: { email: true, role: true } })
     .then((u) => {
-      if (u?.email) {
+      if (u?.email && u.role !== 'OWNER') {
         sendNotificationEmail({
           to:      u.email,
           subject: payload.title,
@@ -54,12 +55,14 @@ export async function createNotifications(payloads: NotificationPayload[]): Prom
     console.error('[notify] Failed to create notifications (bulk):', err);
   }
   // Fire emails — fully async, never blocks the caller
+  // OWNER accounts receive in-app notifications only, no emails
   const ids = payloads.map((p) => p.userId);
-  prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, email: true } })
+  prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, email: true, role: true } })
     .then((users) => {
-      const emailMap = new Map(users.map((u) => [u.id, u.email]));
+      const userMap = new Map(users.map((u) => [u.id, u]));
       for (const p of payloads) {
-        const email = emailMap.get(p.userId);
+        const u = userMap.get(p.userId);
+        const email = u?.role !== 'OWNER' ? u?.email : undefined;
         if (email) {
           sendNotificationEmail({
             to:      email,
