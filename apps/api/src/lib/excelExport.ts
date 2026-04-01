@@ -25,6 +25,8 @@ export interface ExportEntry {
   grossPay:       number;
   totalDeductions:number;
   netPay:         number;
+  arrearsAmount?: number;
+  companyName?:   string;
 }
 
 export interface ReimbursementDetail {
@@ -313,6 +315,123 @@ export async function generatePayrollExcel(opts: ExportOptions): Promise<ExcelJS
     const widths = [12, 22, 16, 14, 36, 16];
     col.width = widths[i] ?? 14;
   });
+
+  // ── Sheet 4: Salary Sheet (matches the standard company salary sheet format) ──
+  const salarySheet = workbook.addWorksheet('Salary Sheet', {
+    pageSetup: { orientation: 'landscape', fitToPage: true },
+  });
+
+  const DARK_BLUE = 'FF1F4E79';
+
+  // Title row (merged A1:S1)
+  salarySheet.mergeCells('A1:S1');
+  const salTitle = salarySheet.getCell('A1');
+  salTitle.value = `Salary Sheet - ${monthName} ${year}`;
+  salTitle.style = {
+    font:      { bold: true, size: 14, color: { argb: DARK_BLUE }, name: 'Arial' },
+    alignment: { horizontal: 'center', vertical: 'middle' },
+  };
+  salarySheet.getRow(1).height = 30;
+
+  // Header row (row 2)
+  const salHeaders = [
+    'Employee Code', 'Name', 'Working Days', 'Gross CTC',
+    'Basic Salary', 'HRA', 'LTA', 'Laptop', 'Bonus',
+    'PT', 'TDS', 'Policy Insurance', 'Adj',
+    'Reimb', 'Arrear', 'Advance Salary', 'EMI', 'Final Pay', 'Company',
+  ];
+  const salHRow = salarySheet.addRow(salHeaders);
+  salHRow.height = 22;
+  salHRow.eachCell((cell) => {
+    cell.style = {
+      font:      { bold: true, color: { argb: WHITE }, size: 10, name: 'Arial' },
+      fill:      { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_BLUE } },
+      alignment: { horizontal: 'center', vertical: 'middle' },
+      border: {
+        top:    { style: 'thin', color: { argb: BORDER_GREY } },
+        bottom: { style: 'thin', color: { argb: BORDER_GREY } },
+        left:   { style: 'thin', color: { argb: BORDER_GREY } },
+        right:  { style: 'thin', color: { argb: BORDER_GREY } },
+      },
+    };
+  });
+
+  // Helper: look up a value from deductions JSON by exact or common name
+  function deductVal(d: Record<string, number>, ...keys: string[]): number {
+    for (const k of keys) {
+      if (d[k] !== undefined) return d[k];
+    }
+    return 0;
+  }
+
+  // Data rows
+  entries.forEach((entry, idx) => {
+    const shade = idx % 2 === 1;
+    const d = entry.deductions;
+    const e = entry.earnings;
+
+    const pt               =  deductVal(d, 'Professional Tax', 'PT');
+    const tds              =  deductVal(d, 'TDS', 'Income Tax');
+    const policyIns        =  deductVal(d, 'Policy Insurance');
+    const adj              =  deductVal(d, 'Adjustment', 'Adj');
+    const advanceSalary    =  deductVal(d, 'Advance Salary');
+    const emi              =  deductVal(d, 'Loan EMI', 'EMI');
+
+    const rowData = [
+      entry.employeeId,                          // A: Employee Code
+      entry.name,                                // B: Name
+      entry.paidDays,                            // C: Working Days (effective paid days)
+      entry.monthlyCtc,                          // D: Gross CTC
+      e['Basic'] ?? e['Basic Salary'] ?? 0,      // E: Basic Salary
+      e['HRA'] ?? 0,                             // F: HRA
+      e['LTA'] ?? 0,                             // G: LTA
+      e['Laptop'] ?? e['Laptop Reimbursement'] ?? 0, // H: Laptop
+      e['Bonus'] ?? 0,                           // I: Bonus
+      pt       > 0 ? -pt       : 0,              // J: PT (negative)
+      tds      > 0 ? -tds      : 0,              // K: TDS (negative)
+      policyIns > 0 ? -policyIns : 0,            // L: Policy Insurance (negative)
+      adj      > 0 ? -adj      : 0,              // M: Adj (negative if positive)
+      entry.reimbursements,                      // N: Reimb
+      entry.arrearsAmount ?? 0,                  // O: Arrear
+      advanceSalary > 0 ? -advanceSalary : 0,    // P: Advance Salary (negative)
+      emi           > 0 ? -emi           : 0,    // Q: EMI (negative)
+      entry.netPay,                              // R: Final Pay
+      entry.companyName ?? '',                   // S: Company
+    ];
+
+    const r = salarySheet.addRow(rowData);
+    r.height = 20;
+    r.eachCell((cell, colIdx) => {
+      const isNumeric = colIdx >= 3;
+      cell.style = {
+        font:      { size: 10, name: 'Arial', color: { argb: 'FF333333' } },
+        fill:      shade ? { type: 'pattern', pattern: 'solid', fgColor: { argb: LIGHT_GREY } } : { type: 'pattern', pattern: 'none' },
+        alignment: { horizontal: colIdx <= 2 || colIdx === 19 ? 'left' : 'right', vertical: 'middle' },
+        border: {
+          top:    { style: 'hair', color: { argb: BORDER_GREY } },
+          bottom: { style: 'hair', color: { argb: BORDER_GREY } },
+          left:   { style: 'hair', color: { argb: BORDER_GREY } },
+          right:  { style: 'hair', color: { argb: BORDER_GREY } },
+        },
+        numFmt: isNumeric && typeof cell.value === 'number' ? '#,##0.00' : undefined,
+      };
+    });
+  });
+
+  // Column widths
+  const salColWidths = [14, 22, 13, 12, 13, 10, 10, 10, 8, 6, 10, 16, 8, 8, 8, 15, 10, 12, 18];
+  salarySheet.columns.forEach((col, i) => {
+    col.width = salColWidths[i] ?? 12;
+  });
+
+  // Freeze panes at C3 (like the salary automater)
+  salarySheet.views = [{ state: 'frozen', xSplit: 2, ySplit: 2, topLeftCell: 'C3' }];
+
+  // Auto-filter on header row
+  salarySheet.autoFilter = {
+    from: { row: 2, column: 1 },
+    to:   { row: 2, column: salHeaders.length },
+  };
 
   return workbook.xlsx.writeBuffer();
 }

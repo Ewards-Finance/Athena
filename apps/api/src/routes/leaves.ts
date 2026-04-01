@@ -18,7 +18,7 @@ import { getOrCreateBalances }      from './leaveBalance';
 import { createNotification, createNotifications } from '../lib/notify';
 import { createAuditLog }           from '../lib/audit';
 import { getFYYear }                from '../lib/fyUtils';
-import { UNLIMITED_LEAVE_TYPES } from '../lib/payrollEngine';
+import { UNLIMITED_LEAVE_TYPES, NO_BALANCE_TRACK_TYPES } from '../lib/payrollEngine';
 import { getBooleanRule } from '../lib/policyEngine';
 import { isDelegateForEmployee } from '../lib/delegation';
 
@@ -112,8 +112,9 @@ async function checkSandwichRule(
 ): Promise<{ sandwichDays: number; sandwichDates: string[]; warning: string }> {
   const empty = { sandwichDays: 0, sandwichDates: [], warning: '' };
 
-  // Sandwich rule only applies to paid leave types, not unlimited ones
+  // Sandwich rule only applies to paid leave types — skip for unlimited and unpaid types
   if ((UNLIMITED_LEAVE_TYPES as readonly string[]).includes(leaveType)) return empty;
+  if ((NO_BALANCE_TRACK_TYPES as readonly string[]).includes(leaveType)) return empty;
 
   const enabled = await getBooleanRule(null, 'sandwich_rule_enabled', true);
   if (!enabled) return empty;
@@ -322,8 +323,10 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
     // ── LWP cascade warning ───────────────────────────────────────────────
     let lwpWarning = '';
     let lwpDays = 0;
-    const isUnlimited = (UNLIMITED_LEAVE_TYPES as readonly string[]).includes(leaveType);
-    if (!isUnlimited) {
+    const isUnlimited  = (UNLIMITED_LEAVE_TYPES  as readonly string[]).includes(leaveType);
+    const isTrackOnly  = (NO_BALANCE_TRACK_TYPES as readonly string[]).includes(leaveType);
+    // UL (unpaid leave) has no balance cap — skip the LWP cascade warning entirely
+    if (!isUnlimited && !isTrackOnly) {
       const year = getFYYear(new Date(start));
       await getOrCreateBalances(req.user!.id, year);
       const balance = await prisma.leaveBalance.findFirst({
@@ -456,7 +459,7 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
 // PATCH /api/leaves/:id/approve - Manager or Admin approves a leave
 router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRequest, res: Response) => {
   const { id }     = req.params;
-  const { comment } = req.body;
+  const { comment, convertToLeaveType } = req.body;
 
   try {
     const leave = await prisma.leaveRequest.findUnique({
@@ -504,17 +507,22 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
     }
 
     const year = getFYYear(new Date(leave.startDate));
-    const isUnlimited = (UNLIMITED_LEAVE_TYPES as readonly string[]).includes(leave.leaveType);
+    // If HR admin is converting the leave type atomically during approval, use the new type
+    const effectiveLeaveType = convertToLeaveType ?? leave.leaveType;
+    const isUnlimited  = (UNLIMITED_LEAVE_TYPES  as readonly string[]).includes(effectiveLeaveType);
+    // UL = track-only: no balance cap, no LWP cascade, but still increment the used counter
+    const isTrackOnly  = (NO_BALANCE_TRACK_TYPES as readonly string[]).includes(effectiveLeaveType);
 
-    // Ensure balance row exists (for non-unlimited types), then approve
+    // Ensure balance row exists for types that have one
     if (!isUnlimited) await getOrCreateBalances(leave.employeeId, year);
 
     // ── LWP cascade: deduct only up to available balance ─────────────────
+    // Skipped for UL — it has no balance quota, so there's nothing to cascade
     let lwpDays = 0;
     let deductDays = leave.totalDays;
-    if (!isUnlimited) {
+    if (!isUnlimited && !isTrackOnly) {
       const balance = await prisma.leaveBalance.findFirst({
-        where: { userId: leave.employeeId, year, leaveType: leave.leaveType },
+        where: { userId: leave.employeeId, year, leaveType: effectiveLeaveType },
       });
       if (balance) {
         const remaining = Math.max(balance.total - balance.used, 0);
@@ -533,14 +541,25 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
           managerId:      req.user!.id,
           managerComment: comment || 'Approved',
           approvedAt:     new Date(),
+          // If converting atomically, persist the new leave type in the same transaction
+          ...(convertToLeaveType ? { leaveType: convertToLeaveType } : {}),
         },
       }),
     ];
-    // Only deduct balance for types that have a balance (not TEMPORARY_WFH / TRAVELLING)
-    if (!isUnlimited && deductDays > 0) {
+
+    if (isTrackOnly) {
+      // UL: no balance deduction, but increment the used counter so HR can see days taken
       approveOps.push(
         prisma.leaveBalance.updateMany({
-          where: { userId: leave.employeeId, year, leaveType: leave.leaveType },
+          where: { userId: leave.employeeId, year, leaveType: effectiveLeaveType },
+          data:  { used: { increment: leave.totalDays } },
+        })
+      );
+    } else if (!isUnlimited && deductDays > 0) {
+      // Regular paid leave: deduct from balance
+      approveOps.push(
+        prisma.leaveBalance.updateMany({
+          where: { userId: leave.employeeId, year, leaveType: effectiveLeaveType },
           data:  { used: { increment: deductDays } },
         })
       );
@@ -548,7 +567,7 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
     const [updated] = await prisma.$transaction(approveOps);
 
     // ── Auto-create TravelProof records for TRAVELLING leaves ─────────────
-    if (leave.leaveType === 'TRAVELLING') {
+    if (effectiveLeaveType === 'TRAVELLING') {
       const proofRecords: any[] = [];
       const cur = new Date(leave.startDate);
       const endDate = new Date(leave.endDate);
@@ -574,7 +593,7 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
         userId:  leave.employeeId,
         type:    'LWP_CASCADE',
         title:   'Leave Balance Exhausted',
-        message: `${lwpDays} day(s) of your ${leave.leaveType} leave will be marked as Loss of Pay (LWP) due to insufficient balance.`,
+        message: `${lwpDays} day(s) of your ${effectiveLeaveType} leave will be marked as Loss of Pay (LWP) due to insufficient balance.`,
         link:    '/leaves',
       });
     }

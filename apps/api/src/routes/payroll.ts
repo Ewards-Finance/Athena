@@ -356,10 +356,12 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
       reimbByUser[c.employeeId] = r2((reimbByUser[c.employeeId] ?? 0) + c.amount);
     }
 
-    // Compute LWP days per employee (APPROVED leaves with leaveType = 'LWP' in this month)
+    // Compute LWP days per employee.
+    // 'LWP' = explicit loss-of-pay leave records (legacy/manual).
+    // 'UL'  = Unpaid Leave approved by HR — these days are salary deductions too.
     const lwpLeaves = await prisma.leaveRequest.findMany({
       where: {
-        leaveType: 'LWP',
+        leaveType: { in: ['LWP', 'UL'] },
         status:    'APPROVED',
         startDate: { lte: monthEnd },
         endDate:   { gte: monthStart },
@@ -501,12 +503,12 @@ router.post('/runs', authorize(['ADMIN']), async (req: AuthRequest, res: Respons
     }
 
     // ── Temporary WFH: 30% daily deduction ─────────────────────────────────
-    // Employees on approved TEMPORARY_WFH are present (no LWP), but get a
+    // Employees on approved TWFH are present (no LWP), but get a
     // 30% deduction on those days. Compute wfhDays per employee here and
     // pass to computePayslipEntry which applies the deduction.
     const wfhLeaves = await prisma.leaveRequest.findMany({
       where: {
-        leaveType: 'TEMPORARY_WFH',
+        leaveType: 'TWFH',
         status:    'APPROVED',
         startDate: { lte: monthEnd },
         endDate:   { gte: monthStart },
@@ -865,8 +867,8 @@ router.post('/runs/:id/submit', authorize(['ADMIN']), async (req: AuthRequest, r
   }
 });
 
-// POST /api/payroll/runs/:id/finalize — OWNER approves SUBMITTED run (maker-checker)
-router.post('/runs/:id/finalize', authorize(['OWNER']), async (req: AuthRequest, res: Response) => {
+// POST /api/payroll/runs/:id/finalize — Admin or Owner finalizes a SUBMITTED run
+router.post('/runs/:id/finalize', authorize(['ADMIN', 'OWNER']), async (req: AuthRequest, res: Response) => {
   try {
     const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
     if (!run)                       { res.status(404).json({ error: 'Run not found' }); return; }
@@ -919,8 +921,8 @@ router.post('/runs/:id/finalize', authorize(['OWNER']), async (req: AuthRequest,
   }
 });
 
-// POST /api/payroll/runs/:id/reopen — Owner reopens a FINALIZED run back to DRAFT
-router.post('/runs/:id/reopen', authorize(['OWNER']), async (req: AuthRequest, res: Response) => {
+// POST /api/payroll/runs/:id/reopen — Admin or Owner reopens a FINALIZED run back to DRAFT
+router.post('/runs/:id/reopen', authorize(['ADMIN', 'OWNER']), async (req: AuthRequest, res: Response) => {
   try {
     const run = await prisma.payrollRun.findUnique({ where: { id: req.params.id } });
     if (!run)                       { res.status(404).json({ error: 'Run not found' }); return; }
@@ -972,6 +974,7 @@ router.get('/runs/:id/export', authorize(['ADMIN']), async (req: AuthRequest, re
     const run = await prisma.payrollRun.findUnique({
       where:   { id: req.params.id },
       include: {
+        company: { select: { displayName: true, legalName: true } },
         entries: {
           include: {
             user: {
@@ -1037,6 +1040,8 @@ router.get('/runs/:id/export', authorize(['ADMIN']), async (req: AuthRequest, re
         grossPay:       e.grossPay,
         totalDeductions:e.totalDeductions,
         netPay:         e.netPay,
+        arrearsAmount:  (e as any).arrearsAmount ?? 0,
+        companyName:    (e as any).companyLegalName ?? run.company?.legalName ?? run.company?.displayName ?? '',
       })),
       reimbDetails: claims.map((c) => ({
         employeeId:   c.employee.profile?.employeeId ?? '',

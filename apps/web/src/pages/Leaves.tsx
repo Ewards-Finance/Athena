@@ -88,18 +88,24 @@ type LeaveFormData = z.infer<typeof leaveSchema>;
 // ─── BalanceBar ───────────────────────────────────────────────────────────────
 
 function BalanceBar({ label, total, used }: { label: string; total: number; used: number }) {
-  const available = Math.max(total - used, 0);
-  const pct       = total > 0 ? Math.min((used / total) * 100, 100) : 0;
-  const isLow     = available <= 2 && total > 0;
+  const isTrackOnly = total === 0; // e.g. Unpaid Leave — no cap, just track count
+  const available   = Math.max(total - used, 0);
+  const pct         = total > 0 ? Math.min((used / total) * 100, 100) : 0;
+  const isLow       = available <= 2 && total > 0;
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between text-xs">
         <span className="font-medium text-muted-foreground">{label}</span>
-        <span className={`font-semibold ${isLow ? 'text-rose-600' : ''}`}>{available} / {total} left</span>
+        {isTrackOnly
+          ? <span className="font-semibold text-muted-foreground">{used} day{used !== 1 ? 's' : ''} taken</span>
+          : <span className={`font-semibold ${isLow ? 'text-rose-600' : ''}`}>{available} / {total} left</span>
+        }
       </div>
-      <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
-        <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: isLow ? '#ef4444' : '#361963' }} />
-      </div>
+      {!isTrackOnly && (
+        <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+          <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: isLow ? '#ef4444' : '#361963' }} />
+        </div>
+      )}
     </div>
   );
 }
@@ -292,10 +298,10 @@ export default function Leaves() {
     }
   };
 
-  const handleApprove = async (id: string) => {
+  const handleApprove = async (id: string, convertTo?: string) => {
     setActionLoading(id + '-approve');
     try {
-      await api.patch(`/leaves/${id}/approve`, { comment: 'Approved' });
+      await api.patch(`/leaves/${id}/approve`, { comment: 'Approved', ...(convertTo ? { convertToLeaveType: convertTo } : {}) });
       fetchLeaves();
       fetchBalances();
       toast.success('Leave approved');
@@ -569,7 +575,7 @@ export default function Leaves() {
           {balances.length > 0 && (
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">My Leave Balance — {new Date().getFullYear()}</CardTitle>
+                <CardTitle className="text-base">My Leave Balance — FY {_curFY}-{(_curFY + 1).toString().slice(-2)}</CardTitle>
                 <CardDescription>Allocated vs used days</CardDescription>
               </CardHeader>
               <CardContent>
@@ -805,7 +811,7 @@ export default function Leaves() {
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-base">Team Leave Balances — {new Date().getFullYear()}</CardTitle>
+                  <CardTitle className="text-base">Team Leave Balances — FY {_curFY}-{(_curFY + 1).toString().slice(-2)}</CardTitle>
                   <CardDescription className="mt-0.5">Remaining days per employee</CardDescription>
                 </div>
                 <Button size="sm" variant="outline" onClick={fetchTeamOverview} disabled={teamLoading}>
@@ -1085,7 +1091,7 @@ function LeaveRow({
   canAction:     boolean;
   canWithdraw:   boolean;
   actionLoading: string | null;
-  onApprove:     (id: string) => void;
+  onApprove:     (id: string, convertTo?: string) => void;
   onRejectClick: (id: string) => void;
   onWithdraw:    (id: string) => void;
   isAdmin:       boolean;
@@ -1095,6 +1101,9 @@ function LeaveRow({
   const [showTypeChange, setShowTypeChange] = useState(false);
   const [selectedType,   setSelectedType]   = useState(leave.leaveType);
   const canChangeType = isAdmin && leave.status === 'PENDING';
+
+  // Keep selectedType in sync when the parent refreshes the leave data after a conversion
+  useEffect(() => { setSelectedType(leave.leaveType); }, [leave.leaveType]);
 
   const handleSaveType = () => {
     if (selectedType !== leave.leaveType) onChangeType(leave.id, selectedType);
@@ -1168,7 +1177,9 @@ function LeaveRow({
 
         {canAction && (
           <>
-            <Button size="sm" variant="outline" className="text-green-600 border-green-300 hover:bg-green-50" onClick={() => onApprove(leave.id)} disabled={!!actionLoading}>
+            <Button size="sm" variant="outline" className="text-green-600 border-green-300 hover:bg-green-50"
+              onClick={() => onApprove(leave.id, selectedType !== leave.leaveType ? selectedType : undefined)}
+              disabled={!!actionLoading}>
               {actionLoading === leave.id + '-approve' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
             </Button>
             <Button size="sm" variant="outline" className="text-destructive border-destructive/30 hover:bg-destructive/10" onClick={() => onRejectClick(leave.id)} disabled={!!actionLoading}>

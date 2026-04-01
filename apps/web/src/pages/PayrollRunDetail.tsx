@@ -306,8 +306,8 @@ export default function PayrollRunDetail() {
               {submittingForReview ? 'Submitting…' : 'Submit for Review'}
             </Button>
           )}
-          {/* SUBMITTED: Owner approves */}
-          {run.status === 'SUBMITTED' && user?.role === 'OWNER' && (
+          {/* SUBMITTED: Admin or Owner can finalize */}
+          {run.status === 'SUBMITTED' && (user?.role === 'OWNER' || user?.role === 'ADMIN') && (
             <Button
               onClick={handleFinalize}
               disabled={finalizing}
@@ -316,13 +316,13 @@ export default function PayrollRunDetail() {
               {finalizing ? 'Approving…' : 'Approve & Finalize'}
             </Button>
           )}
-          {run.status === 'SUBMITTED' && user?.role !== 'OWNER' && (
+          {run.status === 'SUBMITTED' && user?.role !== 'OWNER' && user?.role !== 'ADMIN' && (
             <span className="text-sm text-blue-600 italic bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-md">
-              Awaiting Owner approval
+              Awaiting approval
             </span>
           )}
-          {/* FINALIZED: Owner can reopen */}
-          {run.status === 'FINALIZED' && user?.role === 'OWNER' && (
+          {/* FINALIZED: Admin or Owner can reopen */}
+          {run.status === 'FINALIZED' && (user?.role === 'OWNER' || user?.role === 'ADMIN') && (
             <Button
               onClick={handleReopen}
               disabled={reopening}
@@ -582,7 +582,7 @@ export default function PayrollRunDetail() {
           </Button>
         </div>
       )}
-      {run.status === 'SUBMITTED' && user?.role === 'OWNER' && (
+      {run.status === 'SUBMITTED' && (user?.role === 'OWNER' || user?.role === 'ADMIN') && (
         <div className="flex justify-end">
           <Button
             onClick={handleFinalize}

@@ -276,18 +276,24 @@ export const SATURDAY_FREE_OFF: Record<'FULL_TIME' | 'INTERN', number> = {
 
 // ─── Special Leave Types ───────────────────────────────────────────────────────
 /**
- * UNLIMITED_LEAVE_TYPES: Leave types with no fixed balance.
- *   TEMPORARY_WFH — employee works from home; 30% daily pay deduction applies.
- *   TRAVELLING    — employee is on field travel; auto-treated as present, no LWP.
+ * UNLIMITED_LEAVE_TYPES: Leave types with no fixed balance and no balance tracking.
+ *   TWFH       — employee works from home; 30% daily pay deduction applies.
+ *   TRAVELLING — employee is on field travel; auto-treated as present, no LWP.
  *
  * Rules:
  *   - No LeaveBalance row created or decremented for these types.
- *   - TEMPORARY_WFH: deduction = (fullGross / workingDays) × wfhDays × WFH_DEDUCTION_RATE
+ *   - TWFH: deduction = (fullGross / workingDays) × wfhDays × WFH_DEDUCTION_RATE
  *     Added to payslip deductions as "WFH Deduction". LWP days unaffected.
  *   - TRAVELLING: approved travelling days are subtracted from computed LWP.
+ *
+ * NO_BALANCE_TRACK_TYPES: Leave types with no balance cap but usage IS tracked.
+ *   UL — Unpaid Leave. No quota, but `used` count is incremented on each approval
+ *        so HR can see how many unpaid days an employee has taken. Approved UL days
+ *        count as LWP in payroll (no pay for those days). No LWP cascade warning.
  */
-export const UNLIMITED_LEAVE_TYPES = ['TEMPORARY_WFH', 'TRAVELLING'] as const;
-export const WFH_DEDUCTION_RATE    = 0.30;
+export const UNLIMITED_LEAVE_TYPES   = ['TWFH', 'TRAVELLING'] as const;
+export const NO_BALANCE_TRACK_TYPES  = ['UL'] as const;
+export const WFH_DEDUCTION_RATE      = 0.30;
 
 // ─── Mid-Month Salary Revision Pro-Rating ────────────────────────────────────
 /**
