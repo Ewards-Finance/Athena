@@ -116,7 +116,7 @@ const addEmployeeSchema = z.object({
   middleName:        z.string().optional(),
   lastName:          z.string().min(1, 'Required'),
   email:             z.string().email('Invalid email'),
-  password:          z.string().min(8, 'Minimum 8 characters'),
+  password:          z.string().min(1, 'Password is required'),
   employeeId:        z.string().min(1, 'Required'),
   role:              z.enum(['EMPLOYEE', 'MANAGER', 'ADMIN']),
   employmentType:    z.enum(['FULL_TIME', 'INTERN']).default('FULL_TIME'),

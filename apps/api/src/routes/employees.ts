@@ -82,7 +82,7 @@ const profileUpdateSchema = z.object({
   employmentStatus: z.enum(['PENDING_JOIN', 'PROBATION', 'INTERNSHIP', 'REGULAR_FULL_TIME', 'NOTICE_PERIOD', 'INACTIVE']).optional(),
 });
 
-const passwordSchema = z.string().min(6, 'Password must be at least 6 characters');
+const passwordSchema = z.string().min(1, 'Password is required');
 
 const createEmployeeSchema = z.object({
   email:             z.string().email(),
