@@ -9,28 +9,28 @@ datasource db {
 }
 
 model AbsenceRecord {
-  id        String   @id
+  id        String   @id @default(cuid())
   userId    String
   date      DateTime
   markedBy  String
   createdAt DateTime @default(now())
-  User      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, date])
 }
 
 model Announcement {
-  id        String   @id
+  id        String   @id @default(cuid())
   title     String
   body      String
   createdBy String
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
-  updatedAt DateTime
+  updatedAt DateTime @updatedAt
 }
 
 model ApiKey {
-  id         String    @id
+  id         String    @id @default(cuid())
   name       String
   keyHash    String    @unique
   prefix     String    @unique
@@ -43,22 +43,22 @@ model ApiKey {
 }
 
 model Asset {
-  id              String            @id
-  name            String
-  assetTag        String            @unique
-  category        AssetCategory
-  serialNumber    String?
-  purchaseDate    DateTime?
-  purchaseCost    Float?
-  status          AssetStatus       @default(AVAILABLE)
-  notes           String?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime
-  AssetAssignment AssetAssignment[]
+  id           String            @id @default(cuid())
+  name         String
+  assetTag     String            @unique
+  category     AssetCategory
+  serialNumber String?
+  purchaseDate DateTime?
+  purchaseCost Float?
+  status       AssetStatus       @default(AVAILABLE)
+  notes        String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  assignments  AssetAssignment[]
 }
 
 model AssetAssignment {
-  id           String    @id
+  id           String    @id @default(cuid())
   assetId      String
   userId       String
   assignedAt   DateTime  @default(now())
@@ -67,15 +67,15 @@ model AssetAssignment {
   conditionIn  String?
   notes        String?
   assignedBy   String
-  Asset        Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  User         User      @relation(fields: [userId], references: [id])
+  asset        Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  user         User      @relation(fields: [userId], references: [id])
 
   @@index([assetId])
   @@index([userId])
 }
 
 model AttendanceAdjustment {
-  id             String   @id
+  id             String   @id @default(cuid())
   userId         String
   month          Int
   year           Int
@@ -83,49 +83,49 @@ model AttendanceAdjustment {
   reason         String?
   createdBy      String
   createdAt      DateTime @default(now())
-  updatedAt      DateTime
-  User           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, month, year])
 }
 
 model AttendanceImport {
-  id               String             @id
-  month            Int
-  year             Int
-  fileName         String
-  importedBy       String
-  recordCount      Int
-  unmappedEnNos    Json
-  arrivalTime      String?
-  extensionDates   Json               @default("[]")
-  createdAt        DateTime           @default(now())
-  AttendanceRecord AttendanceRecord[]
+  id             String             @id @default(cuid())
+  month          Int
+  year           Int
+  fileName       String
+  importedBy     String
+  recordCount    Int
+  unmappedEnNos  Json
+  arrivalTime    String?
+  extensionDates Json               @default("[]")
+  createdAt      DateTime           @default(now())
+  records        AttendanceRecord[]
 
   @@unique([month, year])
 }
 
 model AttendanceRecord {
-  id               String           @id
-  userId           String
-  importId         String
-  date             DateTime
-  checkIn          DateTime?
-  checkOut         DateTime?
-  hoursWorked      Float?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime
-  checkInManual    DateTime?
-  isLate           Boolean          @default(false)
-  lwpDeduction     Float            @default(0)
-  AttendanceImport AttendanceImport @relation(fields: [importId], references: [id], onDelete: Cascade)
-  User             User             @relation(fields: [userId], references: [id])
+  id            String           @id @default(cuid())
+  userId        String
+  importId      String
+  date          DateTime
+  checkIn       DateTime?
+  checkOut      DateTime?
+  hoursWorked   Float?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  checkInManual DateTime?
+  isLate        Boolean          @default(false)
+  lwpDeduction  Float            @default(0)
+  import        AttendanceImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+  user          User             @relation(fields: [userId], references: [id])
 
   @@unique([userId, date])
 }
 
 model AuditLog {
-  id            String   @id
+  id            String   @id @default(cuid())
   actorId       String
   action        String
   entity        String
@@ -139,11 +139,11 @@ model AuditLog {
   reason        String?
   changeSource  String?
   createdAt     DateTime @default(now())
-  User          User     @relation(fields: [actorId], references: [id])
+  actor         User     @relation(fields: [actorId], references: [id])
 }
 
 model BackupLog {
-  id          String   @id
+  id          String   @id @default(cuid())
   triggeredBy String
   status      String
   fileName    String?
@@ -154,7 +154,7 @@ model BackupLog {
 }
 
 model CompOff {
-  id         String        @id
+  id         String        @id @default(cuid())
   userId     String
   earnedDate DateTime
   reason     String
@@ -163,36 +163,36 @@ model CompOff {
   usedOn     DateTime?
   expiresAt  DateTime
   createdAt  DateTime      @default(now())
-  User       User          @relation(fields: [userId], references: [id])
+  user       User          @relation(fields: [userId], references: [id])
 
   @@unique([userId, earnedDate])
 }
 
 model Company {
-  id                        String                      @id
-  code                      String                      @unique
-  legalName                 String
-  displayName               String
-  payrollPrefix             String?
-  pan                       String?
-  tan                       String?
-  gstin                     String?
-  addressLine1              String?
-  addressLine2              String?
-  city                      String?
-  state                     String?
-  pincode                   String?
-  logoUrl                   String?
-  isActive                  Boolean                     @default(true)
-  createdAt                 DateTime                    @default(now())
-  updatedAt                 DateTime
-  EmployeeCompanyAssignment EmployeeCompanyAssignment[]
-  PayrollRun                PayrollRun[]
-  PolicyVersion             PolicyVersion[]
+  id             String                      @id @default(cuid())
+  code           String                      @unique
+  legalName      String
+  displayName    String
+  payrollPrefix  String?
+  pan            String?
+  tan            String?
+  gstin          String?
+  addressLine1   String?
+  addressLine2   String?
+  city           String?
+  state          String?
+  pincode        String?
+  logoUrl        String?
+  isActive       Boolean                     @default(true)
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+  assignments    EmployeeCompanyAssignment[]
+  payrollRuns    PayrollRun[]
+  policyVersions PolicyVersion[]
 }
 
 model DeclaredWFH {
-  id        String   @id
+  id        String   @id @default(cuid())
   date      DateTime @unique
   reason    String?
   createdBy String
@@ -200,45 +200,45 @@ model DeclaredWFH {
 }
 
 model DelegateApprover {
-  id                                      String   @id
-  delegatorId                             String
-  delegateId                              String
-  fromDate                                DateTime
-  toDate                                  DateTime
-  isActive                                Boolean  @default(true)
-  createdAt                               DateTime @default(now())
-  User_DelegateApprover_delegateIdToUser  User     @relation("DelegateApprover_delegateIdToUser", fields: [delegateId], references: [id])
-  User_DelegateApprover_delegatorIdToUser User     @relation("DelegateApprover_delegatorIdToUser", fields: [delegatorId], references: [id])
+  id          String   @id @default(cuid())
+  delegatorId String
+  delegateId  String
+  fromDate    DateTime
+  toDate      DateTime
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  delegate    User     @relation("DelegateApprover_delegateIdToUser", fields: [delegateId], references: [id])
+  delegator   User     @relation("DelegateApprover_delegatorIdToUser", fields: [delegatorId], references: [id])
 }
 
 model EmployeeCompanyAssignment {
-  id                                                      String           @id
-  userId                                                  String
-  companyId                                               String
-  employeeCode                                            String?
-  designation                                             String?
-  department                                              String?
-  reportingManagerId                                      String?
-  annualCTC                                               Float?
-  employmentType                                          String?
-  joiningDate                                             DateTime?
-  effectiveFrom                                           DateTime
-  effectiveTo                                             DateTime?
-  isPrimary                                               Boolean          @default(true)
-  status                                                  AssignmentStatus @default(ACTIVE)
-  notes                                                   String?
-  createdAt                                               DateTime         @default(now())
-  updatedAt                                               DateTime
-  Company                                                 Company          @relation(fields: [companyId], references: [id])
-  User_EmployeeCompanyAssignment_reportingManagerIdToUser User?            @relation("EmployeeCompanyAssignment_reportingManagerIdToUser", fields: [reportingManagerId], references: [id])
-  User_EmployeeCompanyAssignment_userIdToUser             User             @relation("EmployeeCompanyAssignment_userIdToUser", fields: [userId], references: [id], onDelete: Cascade)
+  id                 String           @id @default(cuid())
+  userId             String
+  companyId          String
+  employeeCode       String?
+  designation        String?
+  department         String?
+  reportingManagerId String?
+  annualCTC          Float?
+  employmentType     String?
+  joiningDate        DateTime?
+  effectiveFrom      DateTime
+  effectiveTo        DateTime?
+  isPrimary          Boolean          @default(true)
+  status             AssignmentStatus @default(ACTIVE)
+  notes              String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  company            Company          @relation(fields: [companyId], references: [id])
+  reportingManager   User?            @relation("EmployeeCompanyAssignment_reportingManagerIdToUser", fields: [reportingManagerId], references: [id])
+  user               User             @relation("EmployeeCompanyAssignment_userIdToUser", fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([companyId])
   @@index([userId, status])
 }
 
 model EmployeeDocument {
-  id             String      @id
+  id             String      @id @default(cuid())
   userId         String
   category       DocCategory @default(OTHER)
   name           String
@@ -249,11 +249,11 @@ model EmployeeDocument {
   isRequired     Boolean     @default(false)
   reminderSentAt DateTime?
   createdAt      DateTime    @default(now())
-  User           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model ExitClearance {
-  id            String          @id
+  id            String          @id @default(cuid())
   exitRequestId String
   department    String
   clearedBy     String?
@@ -261,11 +261,11 @@ model ExitClearance {
   remarks       String?
   clearedAt     DateTime?
   createdAt     DateTime        @default(now())
-  ExitRequest   ExitRequest     @relation(fields: [exitRequestId], references: [id], onDelete: Cascade)
+  exitRequest   ExitRequest     @relation(fields: [exitRequestId], references: [id], onDelete: Cascade)
 }
 
 model ExitRequest {
-  id               String           @id
+  id               String           @id @default(cuid())
   userId           String           @unique
   initiatedBy      String
   reason           String
@@ -275,14 +275,14 @@ model ExitRequest {
   buyoutAmount     Float?
   status           ExitStatus       @default(INITIATED)
   createdAt        DateTime         @default(now())
-  updatedAt        DateTime
-  ExitClearance    ExitClearance[]
-  User             User             @relation(fields: [userId], references: [id])
-  FinalSettlement  FinalSettlement?
+  updatedAt        DateTime         @updatedAt
+  clearances       ExitClearance[]
+  user             User             @relation(fields: [userId], references: [id])
+  settlement       FinalSettlement?
 }
 
 model FinalSettlement {
-  id                      String      @id
+  id                      String      @id @default(cuid())
   exitRequestId           String      @unique
   lastMonthSalaryProrated Float
   leaveEncashmentDays     Float
@@ -297,11 +297,11 @@ model FinalSettlement {
   processedBy             String?
   processedAt             DateTime?
   createdAt               DateTime    @default(now())
-  ExitRequest             ExitRequest @relation(fields: [exitRequestId], references: [id], onDelete: Cascade)
+  exitRequest             ExitRequest @relation(fields: [exitRequestId], references: [id], onDelete: Cascade)
 }
 
 model Holiday {
-  id        String   @id
+  id        String   @id @default(cuid())
   name      String
   date      DateTime
   type      String?
@@ -309,7 +309,7 @@ model Holiday {
 }
 
 model ImportBatch {
-  id          String       @id
+  id          String       @id @default(cuid())
   type        ImportType
   uploadedBy  String
   fileName    String
@@ -323,21 +323,21 @@ model ImportBatch {
 }
 
 model LeaveBalance {
-  id        String   @id
+  id        String   @id @default(cuid())
   userId    String
   year      Int
   leaveType String
   total     Float
   used      Float    @default(0)
   createdAt DateTime @default(now())
-  updatedAt DateTime
-  User      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, year, leaveType])
 }
 
 model LeavePolicy {
-  id                  String   @id
+  id                  String   @id @default(cuid())
   leaveType           String   @unique
   label               String
   defaultTotal        Int
@@ -349,34 +349,34 @@ model LeavePolicy {
   carryForwardMaxDays Int?
   encashable          Boolean  @default(false)
   createdAt           DateTime @default(now())
-  updatedAt           DateTime
+  updatedAt           DateTime @updatedAt
 }
 
 model LeaveRequest {
-  id                                 String        @id
-  employeeId                         String
-  managerId                          String?
-  leaveType                          String
-  startDate                          DateTime
-  endDate                            DateTime
-  totalDays                          Float
-  reason                             String
-  status                             LeaveStatus   @default(PENDING)
-  managerComment                     String?
-  approvedAt                         DateTime?
-  createdAt                          DateTime      @default(now())
-  updatedAt                          DateTime
-  durationType                       String?
-  singleDayType                      String?
-  startDayType                       String?
-  endDayType                         String?
-  User_LeaveRequest_employeeIdToUser User          @relation("LeaveRequest_employeeIdToUser", fields: [employeeId], references: [id])
-  User_LeaveRequest_managerIdToUser  User?         @relation("LeaveRequest_managerIdToUser", fields: [managerId], references: [id])
-  TravelProof                        TravelProof[]
+  id             String        @id @default(cuid())
+  employeeId     String
+  managerId      String?
+  leaveType      String
+  startDate      DateTime
+  endDate        DateTime
+  totalDays      Float
+  reason         String
+  status         LeaveStatus   @default(PENDING)
+  managerComment String?
+  approvedAt     DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  durationType   String?
+  singleDayType  String?
+  startDayType   String?
+  endDayType     String?
+  employee       User          @relation("LeaveRequest_employeeIdToUser", fields: [employeeId], references: [id])
+  manager        User?         @relation("LeaveRequest_managerIdToUser", fields: [managerId], references: [id])
+  travelProofs   TravelProof[]
 }
 
 model LoanRequest {
-  id               String     @id
+  id               String     @id @default(cuid())
   userId           String
   amount           Float
   installments     Int
@@ -390,12 +390,12 @@ model LoanRequest {
   startYear        Int?
   paidInstallments Int        @default(0)
   createdAt        DateTime   @default(now())
-  updatedAt        DateTime
-  User             User       @relation(fields: [userId], references: [id])
+  updatedAt        DateTime   @updatedAt
+  user             User       @relation(fields: [userId], references: [id])
 }
 
 model Notification {
-  id        String   @id
+  id        String   @id @default(cuid())
   userId    String
   type      String
   title     String
@@ -403,11 +403,11 @@ model Notification {
   isRead    Boolean  @default(false)
   link      String?
   createdAt DateTime @default(now())
-  User      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model PayrollComponent {
-  id        String        @id
+  id        String        @id @default(cuid())
   name      String        @unique
   type      ComponentType
   calcType  CalcType
@@ -415,11 +415,11 @@ model PayrollComponent {
   isActive  Boolean       @default(true)
   order     Int           @default(0)
   createdAt DateTime      @default(now())
-  updatedAt DateTime
+  updatedAt DateTime      @updatedAt
 }
 
 model PayrollRun {
-  id              String         @id
+  id              String         @id @default(cuid())
   month           Int
   year            Int
   status          PayrollStatus  @default(DRAFT)
@@ -428,16 +428,16 @@ model PayrollRun {
   policyVersionId String?
   runType         PayrollRunType @default(REGULAR)
   createdAt       DateTime       @default(now())
-  updatedAt       DateTime
-  Company         Company?       @relation(fields: [companyId], references: [id])
-  PolicyVersion   PolicyVersion? @relation(fields: [policyVersionId], references: [id])
-  PayslipEntry    PayslipEntry[]
+  updatedAt       DateTime       @updatedAt
+  company         Company?       @relation(fields: [companyId], references: [id])
+  policyVersion   PolicyVersion? @relation(fields: [policyVersionId], references: [id])
+  entries         PayslipEntry[]
 
   @@unique([month, year, companyId, runType])
 }
 
 model PayslipEntry {
-  id                  String     @id
+  id                  String     @id @default(cuid())
   payrollRunId        String
   userId              String
   monthlyCtc          Float
@@ -458,60 +458,60 @@ model PayslipEntry {
   arrearsAmount       Float?     @default(0)
   arrearsNote         String?
   createdAt           DateTime   @default(now())
-  updatedAt           DateTime
-  PayrollRun          PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
-  User                User       @relation(fields: [userId], references: [id])
+  updatedAt           DateTime   @updatedAt
+  payrollRun          PayrollRun @relation(fields: [payrollRunId], references: [id], onDelete: Cascade)
+  user                User       @relation(fields: [userId], references: [id])
 
   @@unique([payrollRunId, userId])
 }
 
 model PolicyAcknowledgement {
-  id              String        @id
+  id              String        @id @default(cuid())
   policyVersionId String
   userId          String
   acknowledgedAt  DateTime?
   isAcknowledged  Boolean       @default(false)
   createdAt       DateTime      @default(now())
-  PolicyVersion   PolicyVersion @relation(fields: [policyVersionId], references: [id], onDelete: Cascade)
-  User            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  policyVersion   PolicyVersion @relation(fields: [policyVersionId], references: [id], onDelete: Cascade)
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([policyVersionId, userId])
 }
 
 model PolicyRule {
-  id              String        @id
+  id              String        @id @default(cuid())
   policyVersionId String
   ruleKey         String
   ruleValue       String
   valueType       String
   description     String?
   createdAt       DateTime      @default(now())
-  PolicyVersion   PolicyVersion @relation(fields: [policyVersionId], references: [id], onDelete: Cascade)
+  policyVersion   PolicyVersion @relation(fields: [policyVersionId], references: [id], onDelete: Cascade)
 
   @@unique([policyVersionId, ruleKey])
 }
 
 model PolicyVersion {
-  id                    String                  @id
-  name                  String
-  versionCode           String                  @unique
-  effectiveFrom         DateTime
-  effectiveTo           DateTime?
-  isActive              Boolean                 @default(false)
-  scope                 PolicyScope             @default(GLOBAL)
-  companyId             String?
-  notes                 String?
-  publishedBy           String?
-  publishedAt           DateTime?
-  createdAt             DateTime                @default(now())
-  PayrollRun            PayrollRun[]
-  PolicyAcknowledgement PolicyAcknowledgement[]
-  PolicyRule            PolicyRule[]
-  Company               Company?                @relation(fields: [companyId], references: [id])
+  id               String                  @id @default(cuid())
+  name             String
+  versionCode      String                  @unique
+  effectiveFrom    DateTime
+  effectiveTo      DateTime?
+  isActive         Boolean                 @default(false)
+  scope            PolicyScope             @default(GLOBAL)
+  companyId        String?
+  notes            String?
+  publishedBy      String?
+  publishedAt      DateTime?
+  createdAt        DateTime                @default(now())
+  payrollRuns      PayrollRun[]
+  acknowledgements PolicyAcknowledgement[]
+  rules            PolicyRule[]
+  company          Company?                @relation(fields: [companyId], references: [id])
 }
 
 model Profile {
-  id                   String    @id
+  id                   String    @id @default(cuid())
   userId               String    @unique
   firstName            String
   middleName           String?
@@ -538,24 +538,24 @@ model Profile {
   kycDocumentUrl       String?
   appointmentLetterUrl String?
   createdAt            DateTime  @default(now())
-  updatedAt            DateTime
+  updatedAt            DateTime  @updatedAt
   annualCtc            Float     @default(0)
   employmentType       String    @default("FULL_TIME")
-  User                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model PunchMapping {
-  id        String   @id
+  id        String   @id @default(cuid())
   enNo      Int      @unique
   userId    String   @unique
   label     String?
   createdAt DateTime @default(now())
-  updatedAt DateTime
-  User      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Reimbursement {
-  id          String        @id
+  id          String        @id @default(cuid())
   employeeId  String
   category    ClaimCategory
   amount      Float
@@ -565,28 +565,28 @@ model Reimbursement {
   paidAt      DateTime?
   paidNote    String?
   createdAt   DateTime      @default(now())
-  updatedAt   DateTime
-  User        User          @relation(fields: [employeeId], references: [id])
+  updatedAt   DateTime      @updatedAt
+  employee    User          @relation(fields: [employeeId], references: [id])
 }
 
 model SalaryRevision {
-  id                                  String         @id
-  userId                              String
-  effectiveDate                       DateTime
-  oldCtc                              Float
-  newCtc                              Float
-  reason                              String?
-  revisedBy                           String
-  status                              RevisionStatus @default(PENDING)
-  proposedBy                          String
-  approvedBy                          String?
-  createdAt                           DateTime       @default(now())
-  User_SalaryRevision_revisedByToUser User           @relation("SalaryRevision_revisedByToUser", fields: [revisedBy], references: [id])
-  User_SalaryRevision_userIdToUser    User           @relation("SalaryRevision_userIdToUser", fields: [userId], references: [id], onDelete: Cascade)
+  id            String         @id @default(cuid())
+  userId        String
+  effectiveDate DateTime
+  oldCtc        Float
+  newCtc        Float
+  reason        String?
+  revisedBy     String
+  status        RevisionStatus @default(PENDING)
+  proposedBy    String
+  approvedBy    String?
+  createdAt     DateTime       @default(now())
+  revisor       User           @relation("SalaryRevision_revisedByToUser", fields: [revisedBy], references: [id])
+  user          User           @relation("SalaryRevision_userIdToUser", fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model ServiceRequest {
-  id          String                 @id
+  id          String                 @id @default(cuid())
   userId      String
   category    ServiceRequestCategory
   subject     String
@@ -596,20 +596,20 @@ model ServiceRequest {
   resolvedAt  DateTime?
   resolution  String?
   createdAt   DateTime               @default(now())
-  updatedAt   DateTime
-  User        User                   @relation(fields: [userId], references: [id])
+  updatedAt   DateTime               @updatedAt
+  user        User                   @relation(fields: [userId], references: [id])
 }
 
 model SystemSetting {
-  id        String   @id
+  id        String   @id @default(cuid())
   key       String   @unique
   value     String
   updatedBy String?
-  updatedAt DateTime
+  updatedAt DateTime @updatedAt
 }
 
 model TravelProof {
-  id             String       @id
+  id             String       @id @default(cuid())
   leaveRequestId String
   userId         String
   proofDate      DateTime
@@ -618,54 +618,54 @@ model TravelProof {
   mapsLink       String?
   submittedAt    DateTime?
   createdAt      DateTime     @default(now())
-  LeaveRequest   LeaveRequest @relation(fields: [leaveRequestId], references: [id])
-  User           User         @relation(fields: [userId], references: [id])
+  leaveRequest   LeaveRequest @relation(fields: [leaveRequestId], references: [id])
+  user           User         @relation(fields: [userId], references: [id])
 
   @@unique([leaveRequestId, proofDate])
 }
 
 model User {
-  id                                                                           String                      @id
-  email                                                                        String                      @unique
-  password                                                                     String
-  role                                                                         Role                        @default(EMPLOYEE)
-  isActive                                                                     Boolean                     @default(true)
-  employmentStatus                                                             EmploymentStatus            @default(REGULAR_FULL_TIME)
-  adminScope                                                                   String?
-  visibilityScope                                                              String?
-  createdAt                                                                    DateTime                    @default(now())
-  updatedAt                                                                    DateTime
-  AbsenceRecord                                                                AbsenceRecord[]
-  AssetAssignment                                                              AssetAssignment[]
-  AttendanceAdjustment                                                         AttendanceAdjustment[]
-  AttendanceRecord                                                             AttendanceRecord[]
-  AuditLog                                                                     AuditLog[]
-  CompOff                                                                      CompOff[]
-  DelegateApprover_DelegateApprover_delegateIdToUser                           DelegateApprover[]          @relation("DelegateApprover_delegateIdToUser")
-  DelegateApprover_DelegateApprover_delegatorIdToUser                          DelegateApprover[]          @relation("DelegateApprover_delegatorIdToUser")
-  EmployeeCompanyAssignment_EmployeeCompanyAssignment_reportingManagerIdToUser EmployeeCompanyAssignment[] @relation("EmployeeCompanyAssignment_reportingManagerIdToUser")
-  EmployeeCompanyAssignment_EmployeeCompanyAssignment_userIdToUser             EmployeeCompanyAssignment[] @relation("EmployeeCompanyAssignment_userIdToUser")
-  EmployeeDocument                                                             EmployeeDocument[]
-  ExitRequest                                                                  ExitRequest?
-  LeaveBalance                                                                 LeaveBalance[]
-  LeaveRequest_LeaveRequest_employeeIdToUser                                   LeaveRequest[]              @relation("LeaveRequest_employeeIdToUser")
-  LeaveRequest_LeaveRequest_managerIdToUser                                    LeaveRequest[]              @relation("LeaveRequest_managerIdToUser")
-  LoanRequest                                                                  LoanRequest[]
-  Notification                                                                 Notification[]
-  PayslipEntry                                                                 PayslipEntry[]
-  PolicyAcknowledgement                                                        PolicyAcknowledgement[]
-  Profile                                                                      Profile?
-  PunchMapping                                                                 PunchMapping?
-  Reimbursement                                                                Reimbursement[]
-  SalaryRevision_SalaryRevision_revisedByToUser                                SalaryRevision[]            @relation("SalaryRevision_revisedByToUser")
-  SalaryRevision_SalaryRevision_userIdToUser                                   SalaryRevision[]            @relation("SalaryRevision_userIdToUser")
-  ServiceRequest                                                               ServiceRequest[]
-  TravelProof                                                                  TravelProof[]
-  WorkLog                                                                      WorkLog[]
+  id                     String                      @id @default(cuid())
+  email                  String                      @unique
+  password               String
+  role                   Role                        @default(EMPLOYEE)
+  isActive               Boolean                     @default(true)
+  employmentStatus       EmploymentStatus            @default(REGULAR_FULL_TIME)
+  adminScope             String?
+  visibilityScope        String?
+  createdAt              DateTime                    @default(now())
+  updatedAt              DateTime                    @updatedAt
+  absenceRecords         AbsenceRecord[]
+  assetAssignments       AssetAssignment[]
+  attendanceAdjustments  AttendanceAdjustment[]
+  attendanceRecords      AttendanceRecord[]
+  auditLogs              AuditLog[]
+  compOffs               CompOff[]
+  delegationsAsDelegate  DelegateApprover[]          @relation("DelegateApprover_delegateIdToUser")
+  delegationsAsDelegator DelegateApprover[]          @relation("DelegateApprover_delegatorIdToUser")
+  companyAssignments     EmployeeCompanyAssignment[] @relation("EmployeeCompanyAssignment_userIdToUser")
+  managedAssignments     EmployeeCompanyAssignment[] @relation("EmployeeCompanyAssignment_reportingManagerIdToUser")
+  employeeDocuments      EmployeeDocument[]
+  exitRequest            ExitRequest?
+  leaveBalances          LeaveBalance[]
+  leavesAsEmployee       LeaveRequest[]              @relation("LeaveRequest_employeeIdToUser")
+  leavesAsManager        LeaveRequest[]              @relation("LeaveRequest_managerIdToUser")
+  loanRequests           LoanRequest[]
+  notifications          Notification[]
+  payslipEntries         PayslipEntry[]
+  policyAcknowledgements PolicyAcknowledgement[]
+  profile                Profile?
+  punchMapping           PunchMapping?
+  reimbursements         Reimbursement[]
+  revisedSalaries        SalaryRevision[]            @relation("SalaryRevision_revisedByToUser")
+  salaryRevisions        SalaryRevision[]            @relation("SalaryRevision_userIdToUser")
+  serviceRequests        ServiceRequest[]
+  travelProofs           TravelProof[]
+  workLogs               WorkLog[]
 }
 
 model WorkLog {
-  id            String    @id
+  id            String    @id @default(cuid())
   userId        String
   date          DateTime
   content       String
@@ -674,8 +674,8 @@ model WorkLog {
   rejectedAt    DateTime?
   rejectionNote String?
   createdAt     DateTime  @default(now())
-  updatedAt     DateTime
-  User          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  updatedAt     DateTime  @updatedAt
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, date])
 }
