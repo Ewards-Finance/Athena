@@ -32,3 +32,14 @@ Athena-V3-Blueprint.md
 Athena-V3.1-Build-Blueprint.md
 ATHENA_PRODUCT_DOCUMENT.md
 Athena-WhatsApp-Plan.md
+
+# Internal / dev files
+BUILD_REPORT.txt
+architechture_report.txt
+spec.md
+Athena_Future_Scope_Summary.md
+Sample_Punchin.txt
+CLAUDE.md
+
+# Vite dev build artifacts
+apps/web/dev-dist/
