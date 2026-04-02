@@ -34,8 +34,8 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
     const pendingLeaves = await prisma.leaveRequest.count({
       where: {
         status: 'PENDING',
-        // Employees see their own pending; Managers/Admin see all
-        ...(user.role === 'EMPLOYEE' ? { employeeId: user.id } : {}),
+        ...(user.role === 'EMPLOYEE' ? { employeeId: user.id } :
+            user.role === 'MANAGER'  ? { managerId: user.id } : {}),
       },
     });
 
@@ -52,7 +52,8 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
     const pendingClaims = await prisma.reimbursement.count({
       where: {
         status: 'PENDING',
-        ...(user.role === 'EMPLOYEE' ? { employeeId: user.id } : {}),
+        ...(user.role === 'EMPLOYEE' ? { employeeId: user.id } :
+            user.role === 'MANAGER'  ? { employee: { profile: { managerId: user.id } } } : {}),
       },
     });
 

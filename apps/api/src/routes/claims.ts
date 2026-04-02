@@ -29,11 +29,14 @@ const claimSchema = z.object({
   billUrl:     z.string().optional(),
 });
 
-// GET /api/claims - Employees see their own; Admin/Manager see all
+// GET /api/claims - Employees see their own; Manager sees own + direct reports'; Admin sees all
 router.get('/', async (req: AuthRequest, res: Response) => {
   const user = req.user!;
   try {
-    const where = user.role === 'EMPLOYEE' ? { employeeId: user.id } : {};
+    const where =
+      user.role === 'EMPLOYEE' ? { employeeId: user.id } :
+      user.role === 'MANAGER'  ? { OR: [{ employeeId: user.id }, { employee: { profile: { managerId: user.id } } }] } :
+      {};
     const claims = await prisma.reimbursement.findMany({
       where,
       include: {
