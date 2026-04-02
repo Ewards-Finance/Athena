@@ -107,10 +107,11 @@ function fmtDate(iso: string): string {
 
 export default function Attendance() {
   const { user } = useAuth();
-  const isAdmin  = user?.role === 'ADMIN' || user?.role === 'OWNER';
+  const isAdmin   = user?.role === 'ADMIN' || user?.role === 'OWNER';
+  const isManager = user?.role === 'MANAGER';
 
   const now = new Date();
-  const [tab, setTab]     = useState<'records' | 'import' | 'mapping' | 'mine' | 'exceptions'>(
+  const [tab, setTab]     = useState<'records' | 'import' | 'mapping' | 'mine' | 'exceptions' | 'team'>(
     isAdmin ? 'records' : 'mine'
   );
   const [month, setMonth] = useState(now.getMonth() + 1);
@@ -450,17 +451,19 @@ export default function Attendance() {
 
   // ── Effects ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (tab === 'records' && isAdmin) fetchSummary();
-    if (tab === 'mine')               fetchMyRecords();
-    if (tab === 'import' && isAdmin)  fetchImports();
-    if (tab === 'mapping' && isAdmin) fetchMappings();
+    if (tab === 'records' && isAdmin)    fetchSummary();
+    if (tab === 'team'    && isManager)  fetchSummary();
+    if (tab === 'mine')                  fetchMyRecords();
+    if (tab === 'import'  && isAdmin)    fetchImports();
+    if (tab === 'mapping' && isAdmin)    fetchMappings();
     if (tab === 'exceptions' && isAdmin) fetchExceptions();
   }, [tab]);
 
-  // Re-fetch when month/year changes on records/mine/exceptions tabs
+  // Re-fetch when month/year changes on records/team/mine/exceptions tabs
   useEffect(() => {
-    if (tab === 'records' && isAdmin) fetchSummary();
-    if (tab === 'mine')               fetchMyRecords();
+    if (tab === 'records' && isAdmin)    fetchSummary();
+    if (tab === 'team'    && isManager)  fetchSummary();
+    if (tab === 'mine')                  fetchMyRecords();
     if (tab === 'exceptions' && isAdmin) fetchExceptions();
   }, [month, year]);
 
@@ -493,17 +496,27 @@ export default function Attendance() {
                     : 'border-transparent text-gray-500 hover:text-gray-700'
                 }`}
               >
-                {t === 'records' ? 'Records' : t === 'import' ? 'Import' : t === 'mapping' ? 'EnNo Mapping' : 'Exception Inbox'}
+                {t === 'records' ? 'All Attendance' : t === 'import' ? 'Import' : t === 'mapping' ? 'EnNo Mapping' : 'Exception Inbox'}
               </button>
             ))}
           </>
         )}
         {!isAdmin && (
-          <button
-            className="px-4 py-2 text-sm font-medium border-b-2 -mb-px border-[#FD8C27] text-[#361963]"
-          >
-            My Attendance
-          </button>
+          <>
+            {(['mine', ...(isManager ? ['team'] : [])] as const).map((t) => (
+              <button
+                key={t}
+                onClick={() => setTab(t as any)}
+                className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                  tab === t
+                    ? 'border-[#FD8C27] text-[#361963]'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                {t === 'mine' ? 'My Attendance' : 'Team Attendance'}
+              </button>
+            ))}
+          </>
         )}
       </div>
 
@@ -1127,6 +1140,189 @@ export default function Attendance() {
                     </table>
                   </div>
                 </>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════════
+          Tab: Team Attendance (Manager)
+      ══════════════════════════════════════════════════════════════════════ */}
+      {tab === 'team' && isManager && (
+        <div className="space-y-4">
+          {/* Month/Year selector */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Label className="text-sm text-gray-600">Month</Label>
+              <select
+                value={month}
+                onChange={(e) => setMonth(Number(e.target.value))}
+                className="h-9 border rounded-md px-3 text-sm bg-white focus:outline-none"
+              >
+                {MONTHS.slice(1).map((m, i) => (
+                  <option key={i + 1} value={i + 1}>{m}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <Label className="text-sm text-gray-600">Year</Label>
+              <select
+                value={year}
+                onChange={(e) => setYear(Number(e.target.value))}
+                className="h-9 border rounded-md px-3 text-sm bg-white focus:outline-none"
+              >
+                {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center justify-between">
+                <span style={{ color: '#361963' }}>
+                  {MONTHS[month]} {year} — Team Attendance
+                </span>
+                {!summaryLoading && (
+                  <span className="text-xs font-normal text-gray-500">
+                    {summary.length} team member{summary.length !== 1 ? 's' : ''} with records
+                  </span>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {summaryLoading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+                </div>
+              ) : summaryError ? (
+                <p className="text-red-500 text-sm">{summaryError}</p>
+              ) : summary.length === 0 ? (
+                <div className="text-center py-10 text-gray-400">
+                  <p className="text-sm">No attendance records for {MONTHS[month]} {year}.</p>
+                  <p className="text-xs mt-1">Attendance data is imported by HR Admin.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-xs text-gray-500">
+                        <th className="pb-2 font-medium">Emp ID</th>
+                        <th className="pb-2 font-medium">Name</th>
+                        <th className="pb-2 font-medium">Dept</th>
+                        <th className="pb-2 font-medium text-center">Days Present</th>
+                        <th className="pb-2 font-medium text-center">Lates</th>
+                        <th className="pb-2 font-medium text-center">LWP</th>
+                        <th className="pb-2 font-medium text-right">Total Hrs</th>
+                        <th className="pb-2 font-medium text-right">Avg Hrs/Day</th>
+                        <th className="pb-2" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {summary.map((row) => {
+                        const empRecords = allRecords.filter((r) => r.userId === row.userId);
+                        const isExpanded = expandedUserId === row.userId;
+                        return (
+                          <>
+                            <tr
+                              key={row.userId}
+                              className="border-b hover:bg-gray-50 cursor-pointer"
+                              onClick={() => setExpandedUserId(isExpanded ? null : row.userId)}
+                            >
+                              <td className="py-3 font-mono text-xs text-gray-600">{row.profile?.employeeId ?? '—'}</td>
+                              <td className="py-3 font-medium text-gray-800">
+                                {row.profile ? `${row.profile.firstName} ${row.profile.lastName}` : '—'}
+                              </td>
+                              <td className="py-3 text-gray-500 text-xs">{row.profile?.department ?? '—'}</td>
+                              <td className="py-3 text-center">
+                                <Badge className="bg-green-100 text-green-700 border-green-200 text-xs">{row.daysPresent}d</Badge>
+                              </td>
+                              <td className="py-3 text-center">
+                                {row.lateCount > 0 ? (
+                                  <Badge className={`text-xs ${row.lateCount > 3 ? 'bg-red-100 text-red-700 border-red-200' : 'bg-orange-100 text-orange-700 border-orange-200'}`}>
+                                    {row.lateCount}
+                                  </Badge>
+                                ) : <span className="text-xs text-gray-400">—</span>}
+                              </td>
+                              <td className="py-3 text-center">
+                                {row.totalLwpDeduction > 0 ? (
+                                  <Badge className="bg-red-100 text-red-700 border-red-200 text-xs">{row.totalLwpDeduction}d</Badge>
+                                ) : <span className="text-xs text-gray-400">—</span>}
+                              </td>
+                              <td className="py-3 text-right font-medium" style={{ color: '#361963' }}>
+                                {row.totalHours > 0 ? `${row.totalHours}h` : '—'}
+                              </td>
+                              <td className="py-3 text-right text-gray-600">
+                                {row.avgHours > 0 ? `${row.avgHours}h` : '—'}
+                              </td>
+                              <td className="py-3 text-right pr-1">
+                                {isExpanded
+                                  ? <ChevronUp className="h-4 w-4 text-gray-400 inline" />
+                                  : <ChevronDown className="h-4 w-4 text-gray-400 inline" />
+                                }
+                              </td>
+                            </tr>
+
+                            {/* Expanded: daily records (read-only) */}
+                            {isExpanded && (
+                              <tr key={`${row.userId}-detail`} className="bg-gray-50/80">
+                                <td colSpan={9} className="px-4 py-3">
+                                  {empRecords.length === 0 ? (
+                                    <p className="text-xs text-gray-400 py-2">No daily records found.</p>
+                                  ) : (
+                                    <table className="w-full text-xs">
+                                      <thead>
+                                        <tr className="text-gray-400 border-b border-gray-200">
+                                          <th className="pb-1.5 font-medium text-left">Date</th>
+                                          <th className="pb-1.5 font-medium text-center">Check-In</th>
+                                          <th className="pb-1.5 font-medium text-center">Check-Out</th>
+                                          <th className="pb-1.5 font-medium text-right">Hours</th>
+                                          <th className="pb-1.5 font-medium text-center">Status</th>
+                                          <th className="pb-1.5 font-medium text-center">LWP</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-gray-100">
+                                        {empRecords.map((rec) => (
+                                          <tr key={rec.id} className="hover:bg-white">
+                                            <td className="py-2 font-medium text-gray-700">{fmtDate(rec.date)}</td>
+                                            <td className="py-2 text-center">
+                                              <span className={`font-medium ${rec.isLate ? 'text-red-600' : 'text-gray-700'}`}>
+                                                {fmtTime(rec.checkInManual ?? rec.checkIn)}
+                                                {rec.checkInManual && (
+                                                  <span className="ml-1 text-[10px] text-blue-500 font-normal">(edited)</span>
+                                                )}
+                                              </span>
+                                            </td>
+                                            <td className="py-2 text-center text-gray-600">{fmtTime(rec.checkOut)}</td>
+                                            <td className="py-2 text-right text-gray-600">
+                                              {rec.hoursWorked != null ? `${rec.hoursWorked}h` : '—'}
+                                            </td>
+                                            <td className="py-2 text-center">
+                                              {rec.isLate
+                                                ? <Badge className="bg-red-100 text-red-700 border-red-200 text-[10px]">Late</Badge>
+                                                : <Badge className="bg-green-100 text-green-700 border-green-200 text-[10px]">On time</Badge>
+                                              }
+                                            </td>
+                                            <td className="py-2 text-center">
+                                              {rec.lwpDeduction > 0
+                                                ? <Badge className="bg-red-100 text-red-700 border-red-200 text-[10px]">−{rec.lwpDeduction}d</Badge>
+                                                : <span className="text-gray-300">—</span>
+                                              }
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  )}
+                                </td>
+                              </tr>
+                            )}
+                          </>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </CardContent>
           </Card>

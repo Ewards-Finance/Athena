@@ -335,8 +335,14 @@ router.get('/records', async (req: AuthRequest, res: Response) => {
 
   try {
     const where: any = { date: { gte: startOfMonth, lte: endOfMonth } };
-    if (req.user!.role !== 'ADMIN') {
+    if (req.user!.role === 'EMPLOYEE') {
       where.userId = req.user!.id;
+    } else if (req.user!.role === 'MANAGER') {
+      const reportees = await prisma.profile.findMany({
+        where: { managerId: req.user!.id },
+        select: { userId: true },
+      });
+      where.userId = { in: reportees.map((r) => r.userId) };
     }
 
     const records = await prisma.attendanceRecord.findMany({
@@ -360,7 +366,7 @@ router.get('/records', async (req: AuthRequest, res: Response) => {
 });
 
 // GET /api/attendance/summary?month=1&year=2026
-router.get('/summary', authorize(['ADMIN']), async (req: AuthRequest, res: Response) => {
+router.get('/summary', authorize(['ADMIN', 'MANAGER']), async (req: AuthRequest, res: Response) => {
   const parsed = z.object({
     month: z.coerce.number().int().min(1).max(12),
     year:  z.coerce.number().int().min(2020).max(2100),
@@ -382,8 +388,17 @@ router.get('/summary', authorize(['ADMIN']), async (req: AuthRequest, res: Respo
   }
 
   try {
+    const summaryWhere: any = { date: { gte: startOfMonth, lte: endOfMonth } };
+    if (req.user!.role === 'MANAGER') {
+      const reportees = await prisma.profile.findMany({
+        where: { managerId: req.user!.id },
+        select: { userId: true },
+      });
+      summaryWhere.userId = { in: reportees.map((r) => r.userId) };
+    }
+
     const records = await prisma.attendanceRecord.findMany({
-      where:   { date: { gte: startOfMonth, lte: endOfMonth } },
+      where:   summaryWhere,
       include: {
         user: {
           select: {
