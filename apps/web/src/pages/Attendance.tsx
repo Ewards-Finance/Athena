@@ -172,33 +172,38 @@ export default function Attendance() {
     setSummaryLoading(true);
     setSummaryError('');
     try {
-      const [sumRes, recRes, impRes, adjRes] = await Promise.all([
+      const [sumRes, recRes] = await Promise.all([
         api.get(`/attendance/summary?month=${month}&year=${year}`),
         api.get(`/attendance/records?month=${month}&year=${year}`),
-        api.get('/attendance/imports'),
-        api.get(`/attendance/adjustments?month=${month}&year=${year}`),
       ]);
       setSummary(sumRes.data);
       setAllRecords(recRes.data);
-      const imp = (impRes.data as ImportBatch[]).find((i) => i.month === month && i.year === year) ?? null;
-      setCurrentImport(imp);
-      setArrivalTime(imp?.arrivalTime ?? '10:00');
-      setExtensionDates(imp?.extensionDates ?? []);
-      setExtensionDateInput('');
-      setExtDatesError('');
       setExpandedUserId(null);
-      setPolicyError('');
-      // Load saved adjustments into state
-      const adjMap: Record<string, number> = {};
-      const reasonMap: Record<string, string> = {};
-      for (const a of adjRes.data) {
-        adjMap[a.userId]    = a.adjustmentDays;
-        reasonMap[a.userId] = a.reason ?? '';
+
+      // Admin-only: fetch import batch info and adjustments
+      if (isAdmin) {
+        const [impRes, adjRes] = await Promise.all([
+          api.get('/attendance/imports'),
+          api.get(`/attendance/adjustments?month=${month}&year=${year}`),
+        ]);
+        const imp = (impRes.data as ImportBatch[]).find((i) => i.month === month && i.year === year) ?? null;
+        setCurrentImport(imp);
+        setArrivalTime(imp?.arrivalTime ?? '10:00');
+        setExtensionDates(imp?.extensionDates ?? []);
+        setExtensionDateInput('');
+        setExtDatesError('');
+        setPolicyError('');
+        const adjMap: Record<string, number> = {};
+        const reasonMap: Record<string, string> = {};
+        for (const a of adjRes.data) {
+          adjMap[a.userId]    = a.adjustmentDays;
+          reasonMap[a.userId] = a.reason ?? '';
+        }
+        setAdjustments(adjMap);
+        setAdjReasons(reasonMap);
+        setSavingAdj({});
+        setAdjSaved({});
       }
-      setAdjustments(adjMap);
-      setAdjReasons(reasonMap);
-      setSavingAdj({});
-      setAdjSaved({});
     } catch {
       setSummaryError('Failed to load attendance data.');
     } finally {

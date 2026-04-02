@@ -156,6 +156,19 @@ export default function Profile() {
   }, [user?.id, reset]);
 
   const onSubmit = async (data: ProfileFormData) => {
+    // Bank fields cannot be cleared once set
+    const bankErrors: string[] = [];
+    if (profile?.bankAccountNumber && data.bankAccountNumber === '')
+      bankErrors.push('Account Number cannot be removed once set');
+    if (profile?.ifscCode && data.ifscCode === '')
+      bankErrors.push('IFSC Code cannot be removed once set');
+    if (profile?.bankName && data.bankName === '')
+      bankErrors.push('Bank Name cannot be removed once set');
+    if (bankErrors.length > 0) {
+      setErrorMsg(bankErrors.join('. '));
+      return;
+    }
+
     setSaving(true);
     setSuccessMsg('');
     setErrorMsg('');

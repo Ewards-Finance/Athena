@@ -40,9 +40,9 @@ const profileUpdateSchema = z.object({
   middleName:       z.string().optional(),
   lastName:         z.string().min(1).optional(),
   dateOfBirth:      z.string().optional(),
-  gender:           z.enum(['Male', 'Female', 'Other', 'Prefer not to say']).optional(),
+  gender:           z.enum(['Male', 'Female', 'Other', 'Prefer not to say']).optional().or(z.literal('')),
   bloodGroup:       z.string().optional(),
-  personalEmail:    z.string().email().optional(),
+  personalEmail:    z.string().email().optional().or(z.literal('')),
   phone:            z.string().optional(),
   emergencyContact: z.string().optional(),
   designation:      z.string().optional(),
@@ -55,13 +55,13 @@ const profileUpdateSchema = z.object({
   role:             z.enum(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']).optional(),
 
   // Statutory fields — validated with regex
-  pan:              z.string().regex(panRegex, 'Invalid PAN format. Expected: AAAAA1234A').optional(),
-  aadharNumber:     z.string().regex(aadharRegex, 'Aadhar must be exactly 12 digits').optional(),
+  pan:              z.string().regex(panRegex, 'Invalid PAN format. Expected: AAAAA1234A').optional().or(z.literal('')),
+  aadharNumber:     z.string().regex(aadharRegex, 'Aadhar must be exactly 12 digits').optional().or(z.literal('')),
   uan:              z.string().optional(),
 
   // Bank details
   bankAccountNumber: z.string().optional(),
-  ifscCode:          z.string().regex(ifscRegex, 'Invalid IFSC format. Expected: AAAA0XXXXXX').optional(),
+  ifscCode:          z.string().regex(ifscRegex, 'Invalid IFSC format. Expected: AAAA0XXXXXX').optional().or(z.literal('')),
   bankName:          z.string().optional(),
 
   // Document upload paths (set by the upload endpoint, not user-typed)
@@ -305,6 +305,26 @@ router.put('/:id([a-z0-9]+)', async (req: AuthRequest, res: Response) => {
 
     const { dateOfBirth, dateOfJoining, role, email, employeeId, annualCtc, employmentStatus, ...profileRest } = parsed.data;
 
+    // Bank fields are required once set — employees cannot clear them
+    // Admins are exempt (they may need to correct data)
+    if (requestingUser.role !== 'ADMIN') {
+      const currentProfile = await prisma.profile.findUnique({
+        where: { userId: id },
+        select: { bankAccountNumber: true, ifscCode: true, bankName: true },
+      });
+      const bankErrors: string[] = [];
+      if (currentProfile?.bankAccountNumber && profileRest.bankAccountNumber === '')
+        bankErrors.push('Account Number cannot be removed once set');
+      if (currentProfile?.ifscCode && profileRest.ifscCode === '')
+        bankErrors.push('IFSC Code cannot be removed once set');
+      if (currentProfile?.bankName && profileRest.bankName === '')
+        bankErrors.push('Bank Name cannot be removed once set');
+      if (bankErrors.length > 0) {
+        res.status(400).json({ error: bankErrors.join('. ') });
+        return;
+      }
+    }
+
     // annualCtc is admin-only — strip it if the requester is not an admin
     const ctcUpdate = requestingUser.role === 'ADMIN' && annualCtc !== undefined
       ? { annualCtc }
@@ -346,11 +366,19 @@ router.put('/:id([a-z0-9]+)', async (req: AuthRequest, res: Response) => {
       }
     }
 
+    // Convert empty strings to null for nullable fields so cleared fields don't store ""
+    const nullIfEmpty = (v: string | undefined) => (v === '' ? null : v);
+
     const updated = await prisma.profile.update({
       where: { userId: id },
       data: {
         ...profileRest,
         ...ctcUpdate,
+        gender:        nullIfEmpty(profileRest.gender as string | undefined),
+        personalEmail: nullIfEmpty(profileRest.personalEmail),
+        pan:           nullIfEmpty(profileRest.pan),
+        aadharNumber:  nullIfEmpty(profileRest.aadharNumber),
+        uan:           nullIfEmpty(profileRest.uan),
         ...(employeeId    ? { employeeId }                        : {}),
         dateOfBirth:   dateOfBirth   ? new Date(dateOfBirth)   : undefined,
         dateOfJoining: dateOfJoining ? new Date(dateOfJoining) : undefined,

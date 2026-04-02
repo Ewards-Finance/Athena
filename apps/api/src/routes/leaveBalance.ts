@@ -18,9 +18,14 @@ const router = Router();
 router.use(authenticate);
 
 // Zod schema: admin sends { year, [leaveType]: number, ... }
+// Leave balances allow whole numbers or .5 halves (e.g. 7.5) — no other decimals
+const halfDayNumber = z.number().min(0).refine(
+  (v) => v * 2 === Math.floor(v * 2),
+  { message: 'Value must be a whole number or .5 (e.g. 7 or 7.5)' }
+);
 const setBalanceSchema = z.object({
   year: z.number().int().min(2020).max(2100),
-}).catchall(z.number().int().min(0));
+}).catchall(halfDayNumber);
 
 // GET /api/leave-balance/overview?year=2026 — all employees' balances (Admin/Manager)
 router.get('/overview', authorize(['ADMIN', 'MANAGER']), async (req: AuthRequest, res: Response) => {

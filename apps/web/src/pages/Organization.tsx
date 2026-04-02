@@ -226,7 +226,7 @@ function QuotaRow({ user, year, policyTypes }: { user: OverviewUser; year: numbe
                     {b && <span className="ml-1 text-[10px] text-muted-foreground/70">({b.used} used)</span>}
                   </Label>
                   <Input
-                    type="number" min={0} max={365}
+                    type="number" min={0} max={365} step={0.5}
                     value={form[lt]}
                     onChange={(e) => setForm((prev) => ({ ...prev, [lt]: Number(e.target.value) }))}
                     className="h-9 text-sm"
