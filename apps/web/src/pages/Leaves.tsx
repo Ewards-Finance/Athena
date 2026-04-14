@@ -39,6 +39,7 @@ interface LeavePolicy {
   defaultTotal: number;
   isActive:     boolean;
   isUnlimited:  boolean;
+  allowedFor?:  string;
 }
 
 interface LeaveRequest {
@@ -56,6 +57,8 @@ interface LeaveRequest {
   startDayType?:  string;
   endDayType?:    string;
   employee?: { profile?: { firstName: string; lastName: string; employeeId: string } };
+  appliedById?: string;
+  appliedBy?: { profile?: { firstName: string; lastName: string } };
 }
 
 // ─── Form schema ──────────────────────────────────────────────────────────────
@@ -141,10 +144,10 @@ function Empty({ icon: Icon, text }: { icon: React.ElementType; text: string }) 
 export default function Leaves() {
   const { user } = useAuth();
 
-  const isManagerOrAdmin = user?.role === 'ADMIN' || user?.role === 'MANAGER';
-  const isAdmin          = user?.role === 'ADMIN';
+  const isManagerOrAdmin = user?.role === 'ADMIN' || user?.role === 'MANAGER' || user?.role === 'OWNER';
+  const isAdmin          = user?.role === 'ADMIN' || user?.role === 'OWNER';
 
-  type Tab = 'my' | 'approvals' | 'team-balances' | 'manage';
+  type Tab = 'my' | 'approvals' | 'team-balances' | 'manage' | 'on-behalf';
   const [tab, setTab] = useState<Tab>('my');
 
   // ── Data ──
@@ -352,7 +355,7 @@ export default function Leaves() {
   const handleSavePolicy = async () => {
     setSavingPolicy(true);
     try {
-      const payload = policyDraft.map(({ id, label, defaultTotal, isActive }) => ({ id, label, defaultTotal, isActive }));
+      const payload = policyDraft.map(({ id, label, defaultTotal, isActive, allowedFor }) => ({ id, label, defaultTotal, isActive, allowedFor }));
       const { data } = await api.put<LeavePolicy[]>('/leave-policy', payload);
       setPolicies(data);
       setPolicyDraft(data.map((p) => ({ ...p })));
@@ -441,7 +444,12 @@ export default function Leaves() {
   };
 
   // ── Active leave types for apply form (TRAVELLING is applied from Travel Proof page)
-  const leaveTypesForForm = policies.filter((p) => p.isActive && p.leaveType !== 'TRAVELLING');
+  const leaveTypesForForm = policies.filter((p) => {
+    if (!p.isActive || p.leaveType === 'TRAVELLING') return false;
+    const empType = (user as any)?.employmentType || 'FULL_TIME';
+    if (p.allowedFor && p.allowedFor !== 'ALL' && p.allowedFor !== empType) return false;
+    return true;
+  });
 
   // ── Own vs team leaves ────────────────────────────────────────────────────
   const myLeaves   = leaves.filter((l) => l.employeeId === user?.id);
@@ -449,11 +457,86 @@ export default function Leaves() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  // ── On-behalf state (Admin only) ──────────────────────────────────────────
+  const [obEmployees, setObEmployees] = useState<{ id: string; name: string; employeeId: string; employmentType?: string }[]>([]);
+  const [obSelectedEmp, setObSelectedEmp] = useState('');
+  const [obLeaveType, setObLeaveType] = useState('');
+  const [obDurationType, setObDurationType] = useState<'SINGLE' | 'MULTIPLE'>('SINGLE');
+  const [obSingleDate, setObSingleDate] = useState('');
+  const [obSingleDayType, setObSingleDayType] = useState('FULL');
+  const [obStartDate, setObStartDate] = useState('');
+  const [obStartDayType, setObStartDayType] = useState('FULL');
+  const [obEndDate, setObEndDate] = useState('');
+  const [obEndDayType, setObEndDayType] = useState('FULL');
+  const [obReason, setObReason] = useState('');
+  const [obSubmitting, setObSubmitting] = useState(false);
+  const [obError, setObError] = useState('');
+  const [obSuccess, setObSuccess] = useState('');
+
+  useEffect(() => {
+    if (isAdmin) {
+      api.get('/employees').then((r) => {
+        const emps = r.data
+          .filter((e: any) => e.isActive && e.id !== user?.id)
+          .map((e: any) => ({
+            id: e.id,
+            name: e.profile ? `${e.profile.firstName} ${e.profile.lastName}` : e.email,
+            employeeId: e.profile?.employeeId || '',
+            employmentType: e.profile?.employmentType || 'FULL_TIME',
+          }));
+        setObEmployees(emps);
+      }).catch(() => {});
+    }
+  }, [isAdmin]);
+
+  const handleOnBehalfSubmit = async () => {
+    if (!obSelectedEmp || !obLeaveType || !obReason) {
+      setObError('Please fill all required fields');
+      return;
+    }
+    setObSubmitting(true);
+    setObError('');
+    setObSuccess('');
+    try {
+      const body: any = {
+        leaveType: obLeaveType,
+        durationType: obDurationType,
+        reason: obReason,
+        onBehalfOf: obSelectedEmp,
+      };
+      if (obDurationType === 'SINGLE') {
+        if (!obSingleDate) { setObError('Date is required'); setObSubmitting(false); return; }
+        body.singleDate = obSingleDate;
+        body.singleDayType = obSingleDayType;
+      } else {
+        if (!obStartDate || !obEndDate) { setObError('Start and end dates are required'); setObSubmitting(false); return; }
+        body.startDate = obStartDate;
+        body.startDayType = obStartDayType;
+        body.endDate = obEndDate;
+        body.endDayType = obEndDayType;
+      }
+      await api.post('/leaves', body);
+      setObSuccess('Leave applied successfully on behalf of the employee.');
+      setObLeaveType('');
+      setObSingleDate('');
+      setObStartDate('');
+      setObEndDate('');
+      setObReason('');
+      // refresh leaves
+      api.get('/leaves').then((r) => setLeaves(r.data)).catch(() => {});
+    } catch (err: any) {
+      setObError(err?.response?.data?.error || err?.response?.data?.message || 'Failed to apply leave');
+    } finally {
+      setObSubmitting(false);
+    }
+  };
+
   const tabs: { key: Tab; label: string; show: boolean }[] = [
-    { key: 'my',             label: 'My Leaves',     show: true },
-    { key: 'approvals',      label: 'Approvals',     show: isManagerOrAdmin },
-    { key: 'team-balances',  label: 'Team Balances', show: isManagerOrAdmin },
-    { key: 'manage',         label: 'Manage',        show: isAdmin },
+    { key: 'my',             label: 'My Leaves',       show: true },
+    { key: 'approvals',      label: 'Approvals',       show: isManagerOrAdmin },
+    { key: 'team-balances',  label: 'Team Balances',   show: isManagerOrAdmin },
+    { key: 'on-behalf',      label: 'Apply on Behalf', show: isAdmin },
+    { key: 'manage',         label: 'Manage',          show: isAdmin },
   ];
 
   return (
@@ -866,6 +949,142 @@ export default function Leaves() {
         </div>
       )}
 
+      {/* ── TAB: APPLY ON BEHALF (Admin only) ─────────────────────────────── */}
+      {tab === 'on-behalf' && isAdmin && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Apply Leave on Behalf of Employee</CardTitle>
+            <CardDescription>As HR Admin, submit a leave request for any employee</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {obError && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-2">{obError}</div>}
+            {obSuccess && <div className="text-sm text-green-600 bg-green-50 border border-green-200 rounded-lg px-4 py-2">{obSuccess}</div>}
+
+            <div className="grid grid-cols-2 gap-4">
+              {/* Employee selector */}
+              <div className="space-y-1.5">
+                <Label>Employee *</Label>
+                <select
+                  value={obSelectedEmp}
+                  onChange={(e) => { setObSelectedEmp(e.target.value); setObLeaveType(''); }}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">— Select employee —</option>
+                  {obEmployees.map((e) => (
+                    <option key={e.id} value={e.id}>{e.name} {e.employeeId ? `(${e.employeeId})` : ''}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Leave type */}
+              <div className="space-y-1.5">
+                <Label>Leave Type *</Label>
+                <select
+                  value={obLeaveType}
+                  onChange={(e) => setObLeaveType(e.target.value)}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">— Select type —</option>
+                  {policies.filter((p) => {
+                    if (!p.isActive || p.leaveType === 'TRAVELLING') return false;
+                    if (obSelectedEmp && p.allowedFor && p.allowedFor !== 'ALL') {
+                      const selectedEmpData = obEmployees.find((e) => e.id === obSelectedEmp);
+                      if (selectedEmpData && p.allowedFor !== selectedEmpData.employmentType) return false;
+                    }
+                    return true;
+                  }).map((p) => (
+                    <option key={p.leaveType} value={p.leaveType}>{p.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Duration type */}
+              <div className="space-y-1.5">
+                <Label>Duration</Label>
+                <select
+                  value={obDurationType}
+                  onChange={(e) => setObDurationType(e.target.value as 'SINGLE' | 'MULTIPLE')}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="SINGLE">Single Day</option>
+                  <option value="MULTIPLE">Multiple Days</option>
+                </select>
+              </div>
+
+              {/* Single day fields */}
+              {obDurationType === 'SINGLE' && (
+                <>
+                  <div className="space-y-1.5">
+                    <Label>Date *</Label>
+                    <Input type="date" value={obSingleDate} onChange={(e) => setObSingleDate(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Session</Label>
+                    <select value={obSingleDayType} onChange={(e) => setObSingleDayType(e.target.value)}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+                      <option value="FULL">Full Day</option>
+                      <option value="FIRST_HALF">First Half</option>
+                      <option value="SECOND_HALF">Second Half</option>
+                    </select>
+                  </div>
+                </>
+              )}
+
+              {/* Multiple day fields */}
+              {obDurationType === 'MULTIPLE' && (
+                <>
+                  <div className="space-y-1.5">
+                    <Label>Start Date *</Label>
+                    <Input type="date" value={obStartDate} onChange={(e) => setObStartDate(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Start Session</Label>
+                    <select value={obStartDayType} onChange={(e) => setObStartDayType(e.target.value)}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+                      <option value="FULL">Full Day</option>
+                      <option value="FROM_SECOND_HALF">From Second Half</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>End Date *</Label>
+                    <Input type="date" value={obEndDate} onChange={(e) => setObEndDate(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>End Session</Label>
+                    <select value={obEndDayType} onChange={(e) => setObEndDayType(e.target.value)}
+                      className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm">
+                      <option value="FULL">Full Day</option>
+                      <option value="UNTIL_FIRST_HALF">Until First Half</option>
+                    </select>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Reason */}
+            <div className="space-y-1.5">
+              <Label>Reason *</Label>
+              <textarea
+                value={obReason}
+                onChange={(e) => setObReason(e.target.value)}
+                placeholder="Enter reason for leave..."
+                className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm min-h-[80px]"
+              />
+            </div>
+
+            <Button
+              onClick={handleOnBehalfSubmit}
+              disabled={obSubmitting || !obSelectedEmp || !obLeaveType}
+              style={{ backgroundColor: '#361963' }}
+              className="text-white"
+            >
+              {obSubmitting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Apply Leave on Behalf
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
       {/* ── TAB: MANAGE (Admin only) ────────────────────────────────────────── */}
       {tab === 'manage' && isAdmin && (
         <div className="space-y-5">
@@ -1146,6 +1365,11 @@ function LeaveRow({
           </span>
         </div>
         <p className="text-sm text-muted-foreground mt-1 truncate">{leave.reason}</p>
+        {leave.appliedById && (
+          <span className="inline-flex items-center text-xs font-medium mt-1 px-2 py-0.5 rounded-full bg-violet-100 text-violet-700">
+            Applied by HR{leave.appliedBy?.profile ? ` (${leave.appliedBy.profile.firstName} ${leave.appliedBy.profile.lastName})` : ''}
+          </span>
+        )}
         {leave.status === 'REJECTED' && leave.managerComment && (
           <p className="text-xs text-rose-600 mt-1 italic font-medium">Rejection reason: {leave.managerComment}</p>
         )}

@@ -190,15 +190,13 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER']), async (req: AuthRequest, re
       where: { role: { in: ['ADMIN', 'OWNER'] }, isActive: true },
       select: { id: true },
     });
-    for (const admin of admins) {
-      await createNotification({
-        userId:  admin.id,
-        type:    'LOAN_REQUESTED',
-        title:   'New Loan Request',
-        message: `A loan request of ₹${amount.toLocaleString('en-IN')} has been submitted.`,
-        link:    '/loans',
-      });
-    }
+    await Promise.all(admins.map((admin) => createNotification({
+      userId:  admin.id,
+      type:    'LOAN_REQUESTED',
+      title:   'New Loan Request',
+      message: `A loan request of ₹${amount.toLocaleString('en-IN')} has been submitted.`,
+      link:    '/loans',
+    })));
 
     res.status(201).json(loan);
   } catch (err) {
@@ -281,9 +279,19 @@ router.patch('/:id/approve', authorize(['ADMIN', 'OWNER']), async (req: AuthRequ
       res.status(404).json({ error: 'Loan not found' });
       return;
     }
-    if (loan.status !== 'PENDING') {
+    if (loan.status !== 'PENDING' && loan.status !== 'REJECTED') {
       res.status(400).json({ error: `Cannot approve a loan that is ${loan.status}` });
       return;
+    }
+    // Payroll lock: block re-approve if payroll for the start month is finalized
+    if (loan.status === 'REJECTED' && loan.startMonth && loan.startYear) {
+      const finalizedRun = await prisma.payrollRun.findFirst({
+        where: { month: loan.startMonth, year: loan.startYear, status: 'FINALIZED' },
+      });
+      if (finalizedRun) {
+        res.status(400).json({ error: 'Cannot change loan status — payroll for this month is already finalized' });
+        return;
+      }
     }
     if (loan.userId === req.user!.id) {
       res.status(403).json({ error: 'You cannot approve your own loan request' });
@@ -349,7 +357,7 @@ router.patch('/:id/reject', authorize(['ADMIN', 'OWNER']), async (req: AuthReque
       res.status(404).json({ error: 'Loan not found' });
       return;
     }
-    if (loan.status !== 'PENDING') {
+    if (loan.status !== 'PENDING' && loan.status !== 'APPROVED') {
       res.status(400).json({ error: `Cannot reject a loan that is ${loan.status}` });
       return;
     }

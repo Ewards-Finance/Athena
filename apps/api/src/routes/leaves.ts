@@ -40,6 +40,8 @@ const applyLeaveSchema = z.object({
   endDayType:   z.enum(['FULL', 'UNTIL_FIRST_HALF']).optional(),
   // Common
   reason: z.string().min(5, 'Reason must be at least 5 characters'),
+  // Admin on-behalf-of
+  onBehalfOf: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.durationType === 'SINGLE') {
     if (!data.singleDate || isNaN(Date.parse(data.singleDate)))
@@ -232,7 +234,8 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     const leaves = await prisma.leaveRequest.findMany({
       where,
       include: {
-        employee: { select: { profile: { select: { firstName: true, lastName: true, employeeId: true } } } },
+        employee:  { select: { profile: { select: { firstName: true, lastName: true, employeeId: true } } } },
+        appliedBy: { select: { profile: { select: { firstName: true, lastName: true } } } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -260,6 +263,7 @@ router.get('/pending', authorize(['ADMIN', 'MANAGER', 'OWNER']), async (req: Aut
             profile: { select: { firstName: true, lastName: true, employeeId: true, department: true } },
           },
         },
+        appliedBy: { select: { profile: { select: { firstName: true, lastName: true } } } },
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -283,8 +287,13 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
     singleDate, singleDayType,
     startDate,  startDayType,
     endDate,    endDayType,
-    reason,
+    reason, onBehalfOf,
   } = parsed.data;
+
+  // Admin applying on behalf of another employee
+  const targetUserId = (onBehalfOf && (req.user!.role === 'ADMIN' || req.user!.role === 'OWNER'))
+    ? onBehalfOf
+    : req.user!.id;
 
   // Compute start, end, and totalDays based on duration type
   let start: Date, end: Date, totalDays: number;
@@ -308,7 +317,7 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
     // For SINGLE leaves singleDayType governs both sides; for MULTIPLE use start/endDayType
     const sandwichStartType = durationType === 'SINGLE' ? singleDayType : startDayType;
     const sandwichEndType   = durationType === 'SINGLE' ? singleDayType : endDayType;
-    const sandwich = await checkSandwichRule(start, end, leaveType, durationType, sandwichStartType, sandwichEndType, req.user!.id);
+    const sandwich = await checkSandwichRule(start, end, leaveType, durationType, sandwichStartType, sandwichEndType, targetUserId);
     if (sandwich.sandwichDays > 0) {
       totalDays += sandwich.sandwichDays;
     }
@@ -316,6 +325,17 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
     // ── Document requirement check ────────────────────────────────────────
     let documentWarning = '';
     const policy = await prisma.leavePolicy.findUnique({ where: { leaveType } });
+
+    // ── Employment type eligibility check ─────────────────────────────────
+    if (policy?.allowedFor && policy.allowedFor !== 'ALL') {
+      const profile = await prisma.profile.findUnique({ where: { userId: targetUserId }, select: { employmentType: true } });
+      const empType = profile?.employmentType ?? 'FULL_TIME';
+      if (policy.allowedFor !== empType) {
+        res.status(400).json({ error: `${policy.label} is not available for ${empType === 'INTERN' ? 'interns' : 'full-time employees'}` });
+        return;
+      }
+    }
+
     if (policy?.documentRequired && totalDays > (policy.documentAfterDays ?? 0)) {
       documentWarning = `Medical document required for ${leaveType} exceeding ${policy.documentAfterDays ?? 0} day(s).`;
     }
@@ -328,9 +348,9 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
     // UL (unpaid leave) has no balance cap — skip the LWP cascade warning entirely
     if (!isUnlimited && !isTrackOnly) {
       const year = getFYYear(new Date(start));
-      await getOrCreateBalances(req.user!.id, year);
+      await getOrCreateBalances(targetUserId, year);
       const balance = await prisma.leaveBalance.findFirst({
-        where: { userId: req.user!.id, year, leaveType },
+        where: { userId: targetUserId, year, leaveType },
       });
       if (balance) {
         const remaining = Math.max(balance.total - balance.used, 0);
@@ -361,7 +381,7 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
     if (!force) {
       const overlapping = await prisma.leaveRequest.findMany({
         where: {
-          employeeId: req.user!.id,
+          employeeId: targetUserId,
           status:     { in: ['PENDING', 'APPROVED'] },
           startDate:  { lte: end },
           endDate:    { gte: start },
@@ -380,14 +400,16 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
 
     // Find the employee's reporting manager from their profile
     const profile = await prisma.profile.findUnique({
-      where:  { userId: req.user!.id },
+      where:  { userId: targetUserId },
       select: { managerId: true },
     });
+
+    const isOnBehalf = targetUserId !== req.user!.id;
 
     const leave = await prisma.leaveRequest.create({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       data: {
-        employeeId:    req.user!.id,
+        employeeId:    targetUserId,
         managerId:     profile?.managerId || undefined,
         leaveType,
         startDate:     start,
@@ -399,12 +421,13 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
         singleDayType: durationType === 'SINGLE'   ? singleDayType : undefined,
         startDayType:  durationType === 'MULTIPLE'  ? startDayType  : undefined,
         endDayType:    durationType === 'MULTIPLE'  ? endDayType    : undefined,
+        ...(isOnBehalf ? { appliedById: req.user!.id } : {}),
       } as any,
     });
 
     // Notify the reporting manager and all HR Admins
     const emp = await prisma.profile.findUnique({
-      where:  { userId: req.user!.id },
+      where:  { userId: targetUserId },
       select: { firstName: true, lastName: true },
     });
     const empName = emp ? `${emp.firstName} ${emp.lastName}` : 'An employee';
@@ -423,7 +446,7 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
 
     // Notify all Admins (excluding the employee themselves if they are an admin)
     const admins = await prisma.user.findMany({
-      where: { role: { in: ['ADMIN', 'OWNER'] }, isActive: true, id: { not: req.user!.id } },
+      where: { role: { in: ['ADMIN', 'OWNER'] }, isActive: true, id: { notIn: [req.user!.id, targetUserId] } },
       select: { id: true },
     });
     // Exclude manager if already notified above to avoid duplicates
@@ -440,6 +463,17 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER', 'ADMIN', 'OWNER']), async (re
           link:    leaveLink,
         }))
       );
+    }
+
+    // Notify the employee when HR applies leave on their behalf
+    if (isOnBehalf) {
+      await createNotification({
+        userId:  targetUserId,
+        type:    'LEAVE_APPLIED',
+        title:   'Leave Applied on Your Behalf',
+        message: `HR has applied ${leaveType} leave (${daysStr}) on your behalf. Reason: ${reason}`,
+        link:    leaveLink,
+      });
     }
 
     res.status(201).json({
@@ -477,9 +511,22 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
       res.status(404).json({ error: 'Leave request not found' });
       return;
     }
-    if (leave.status !== 'PENDING') {
-      res.status(400).json({ error: `Cannot approve a leave that is already ${leave.status}` });
+    if (leave.status !== 'PENDING' && leave.status !== 'REJECTED') {
+      res.status(400).json({ error: `Cannot approve a leave that is ${leave.status}` });
       return;
+    }
+
+    // Payroll lock: block re-approve if that month's payroll is finalized
+    if (leave.status === 'REJECTED') {
+      const leaveMonth = new Date(leave.startDate).getMonth() + 1;
+      const leaveYear  = new Date(leave.startDate).getFullYear();
+      const finalizedRun = await prisma.payrollRun.findFirst({
+        where: { month: leaveMonth, year: leaveYear, status: 'FINALIZED' },
+      });
+      if (finalizedRun) {
+        res.status(400).json({ error: 'Cannot change leave status — payroll for this month is already finalized' });
+        return;
+      }
     }
 
     // Cannot approve your own leave
@@ -658,9 +705,22 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
       res.status(404).json({ error: 'Leave request not found' });
       return;
     }
-    if (leave.status !== 'PENDING') {
-      res.status(400).json({ error: `Cannot reject a leave that is already ${leave.status}` });
+    if (leave.status !== 'PENDING' && leave.status !== 'APPROVED') {
+      res.status(400).json({ error: `Cannot reject a leave that is ${leave.status}` });
       return;
+    }
+
+    // Payroll lock: block re-reject if that month's payroll is finalized
+    if (leave.status === 'APPROVED') {
+      const leaveMonth = new Date(leave.startDate).getMonth() + 1;
+      const leaveYear  = new Date(leave.startDate).getFullYear();
+      const finalizedRun = await prisma.payrollRun.findFirst({
+        where: { month: leaveMonth, year: leaveYear, status: 'FINALIZED' },
+      });
+      if (finalizedRun) {
+        res.status(400).json({ error: 'Cannot change leave status — payroll for this month is already finalized' });
+        return;
+      }
     }
 
     // Cannot reject your own leave
@@ -685,14 +745,40 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
       }
     }
 
-    const updated = await prisma.leaveRequest.update({
-      where: { id },
-      data: {
-        status:         'REJECTED',
-        managerId:      req.user!.id,
-        managerComment: comment || 'Rejected',
-      },
-    });
+    // If re-rejecting an APPROVED leave, refund the balance
+    const wasApproved = leave.status === 'APPROVED';
+    const rejectOps: any[] = [
+      prisma.leaveRequest.update({
+        where: { id },
+        data: {
+          status:         'REJECTED',
+          managerId:      req.user!.id,
+          managerComment: comment || 'Rejected',
+        },
+      }),
+    ];
+
+    if (wasApproved) {
+      const year = getFYYear(new Date(leave.startDate));
+      const isUnlimited = (UNLIMITED_LEAVE_TYPES as readonly string[]).includes(leave.leaveType);
+      const isTrackOnly = (NO_BALANCE_TRACK_TYPES as readonly string[]).includes(leave.leaveType);
+      if (!isUnlimited) {
+        // Refund the used balance (covers both regular and track-only types)
+        rejectOps.push(
+          prisma.leaveBalance.updateMany({
+            where: { userId: leave.employeeId, year, leaveType: leave.leaveType },
+            data:  { used: { decrement: leave.totalDays } },
+          })
+        );
+      }
+      // Clean up TravelProof records if it was TRAVELLING
+      if (leave.leaveType === 'TRAVELLING') {
+        rejectOps.push(
+          prisma.travelProof.deleteMany({ where: { leaveRequestId: leave.id } })
+        );
+      }
+    }
+    const [updated] = await prisma.$transaction(rejectOps);
 
     // Notify the employee their leave was rejected
     await createNotification({
@@ -720,8 +806,8 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
         startDate: leave.startDate,
         endDate: leave.endDate,
       },
-      oldValues: { status: 'PENDING' },
-      newValues: { status: 'REJECTED', comment: comment || 'Rejected' },
+      oldValues: { status: leave.status },
+      newValues: { status: 'REJECTED', comment: comment || 'Rejected', ...(wasApproved ? { balanceRefunded: true } : {}) },
       changeSource: 'WEB',
     });
 

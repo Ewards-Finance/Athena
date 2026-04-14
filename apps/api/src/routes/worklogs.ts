@@ -273,11 +273,8 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
 
 // ─── PUT /api/worklogs/:id/reject ─────────────────────────────────────────────
 
-router.put('/:id/reject', async (req: AuthRequest, res: Response) => {
-  const { role, id: rejectorId } = req.user!;
-  if (role !== 'MANAGER' && role !== 'ADMIN') {
-    return res.status(403).json({ error: 'Only managers or admins can reject worklogs' });
-  }
+router.put('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthRequest, res: Response) => {
+  const { id: rejectorId } = req.user!;
 
   const parsed = rejectSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -287,6 +284,16 @@ router.put('/:id/reject', async (req: AuthRequest, res: Response) => {
   try {
     const existing = await prisma.workLog.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: 'Worklog not found' });
+
+    // Payroll lock: block if that month's payroll is finalized
+    const wlMonth = new Date(existing.date).getMonth() + 1;
+    const wlYear  = new Date(existing.date).getFullYear();
+    const finalizedRun = await prisma.payrollRun.findFirst({
+      where: { month: wlMonth, year: wlYear, status: 'FINALIZED' },
+    });
+    if (finalizedRun) {
+      return res.status(400).json({ error: 'Cannot change worklog status — payroll for this month is already finalized' });
+    }
 
     const updated = await prisma.workLog.update({
       where: { id: req.params.id },
@@ -306,15 +313,20 @@ router.put('/:id/reject', async (req: AuthRequest, res: Response) => {
 
 // ─── PUT /api/worklogs/:id/restore ────────────────────────────────────────────
 
-router.put('/:id/restore', async (req: AuthRequest, res: Response) => {
-  const { role } = req.user!;
-  if (role !== 'MANAGER' && role !== 'ADMIN') {
-    return res.status(403).json({ error: 'Only managers or admins can restore worklogs' });
-  }
-
+router.put('/:id/restore', authorize(['ADMIN', 'MANAGER']), async (req: AuthRequest, res: Response) => {
   try {
     const existing = await prisma.workLog.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: 'Worklog not found' });
+
+    // Payroll lock: block if that month's payroll is finalized
+    const wlMonth = new Date(existing.date).getMonth() + 1;
+    const wlYear  = new Date(existing.date).getFullYear();
+    const finalizedRun = await prisma.payrollRun.findFirst({
+      where: { month: wlMonth, year: wlYear, status: 'FINALIZED' },
+    });
+    if (finalizedRun) {
+      return res.status(400).json({ error: 'Cannot change worklog status — payroll for this month is already finalized' });
+    }
 
     const updated = await prisma.workLog.update({
       where: { id: req.params.id },

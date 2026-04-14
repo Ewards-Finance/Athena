@@ -348,6 +348,7 @@ model LeavePolicy {
   carryForwardEnabled Boolean  @default(false)
   carryForwardMaxDays Int?
   encashable          Boolean  @default(false)
+  allowedFor          String   @default("ALL")  // "ALL" | "FULL_TIME" | "INTERN"
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 }
@@ -370,8 +371,10 @@ model LeaveRequest {
   singleDayType  String?
   startDayType   String?
   endDayType     String?
+  appliedById    String?
   employee       User          @relation("LeaveRequest_employeeIdToUser", fields: [employeeId], references: [id])
   manager        User?         @relation("LeaveRequest_managerIdToUser", fields: [managerId], references: [id])
+  appliedBy      User?         @relation("LeaveRequest_appliedByIdToUser", fields: [appliedById], references: [id])
   travelProofs   TravelProof[]
 }
 
@@ -650,6 +653,7 @@ model User {
   leaveBalances          LeaveBalance[]
   leavesAsEmployee       LeaveRequest[]              @relation("LeaveRequest_employeeIdToUser")
   leavesAsManager        LeaveRequest[]              @relation("LeaveRequest_managerIdToUser")
+  leavesAppliedOnBehalf  LeaveRequest[]              @relation("LeaveRequest_appliedByIdToUser")
   loanRequests           LoanRequest[]
   notifications          Notification[]
   payslipEntries         PayslipEntry[]

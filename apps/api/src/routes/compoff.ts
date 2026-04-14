@@ -148,15 +148,13 @@ router.post('/', authorize(['EMPLOYEE', 'MANAGER']), async (req: AuthRequest, re
       where: { role: { in: ['ADMIN', 'OWNER', 'MANAGER'] }, isActive: true },
       select: { id: true },
     });
-    for (const a of approvers) {
-      await createNotification({
-        userId:  a.id,
-        type:    'COMPOFF_REQUESTED',
-        title:   'New Comp-Off Request',
-        message: `A comp-off request has been submitted for ${earnedDate.toDateString()}.`,
-        link:    '/compoff',
-      });
-    }
+    await Promise.all(approvers.map((a) => createNotification({
+      userId:  a.id,
+      type:    'COMPOFF_REQUESTED',
+      title:   'New Comp-Off Request',
+      message: `A comp-off request has been submitted for ${earnedDate.toDateString()}.`,
+      link:    '/compoff',
+    })));
 
     res.status(201).json(compoff);
   } catch (err) {
@@ -173,9 +171,19 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER', 'OWNER']), async (re
       res.status(404).json({ error: 'Comp-off not found' });
       return;
     }
-    if (compoff.status !== 'PENDING') {
+    if (compoff.status !== 'PENDING' && compoff.status !== 'REJECTED') {
       res.status(400).json({ error: `Cannot approve a comp-off that is ${compoff.status}` });
       return;
+    }
+    // Payroll lock
+    if (compoff.status === 'REJECTED') {
+      const coMonth = new Date(compoff.earnedDate).getMonth() + 1;
+      const coYear  = new Date(compoff.earnedDate).getFullYear();
+      const finalizedRun = await prisma.payrollRun.findFirst({ where: { month: coMonth, year: coYear, status: 'FINALIZED' } });
+      if (finalizedRun) {
+        res.status(400).json({ error: 'Cannot change comp-off status — payroll for this month is already finalized' });
+        return;
+      }
     }
     if (compoff.userId === req.user!.id) {
       res.status(403).json({ error: 'You cannot approve your own comp-off request' });
@@ -213,9 +221,19 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER', 'OWNER']), async (req
       res.status(404).json({ error: 'Comp-off not found' });
       return;
     }
-    if (compoff.status !== 'PENDING') {
+    if (compoff.status !== 'PENDING' && compoff.status !== 'APPROVED') {
       res.status(400).json({ error: `Cannot reject a comp-off that is ${compoff.status}` });
       return;
+    }
+    // Payroll lock
+    if (compoff.status === 'APPROVED') {
+      const coMonth = new Date(compoff.earnedDate).getMonth() + 1;
+      const coYear  = new Date(compoff.earnedDate).getFullYear();
+      const finalizedRun = await prisma.payrollRun.findFirst({ where: { month: coMonth, year: coYear, status: 'FINALIZED' } });
+      if (finalizedRun) {
+        res.status(400).json({ error: 'Cannot change comp-off status — payroll for this month is already finalized' });
+        return;
+      }
     }
     if (compoff.userId === req.user!.id) {
       res.status(403).json({ error: 'You cannot reject your own comp-off request' });

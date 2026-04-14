@@ -126,9 +126,22 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
   try {
     const claim = await prisma.reimbursement.findUnique({ where: { id } });
     if (!claim) { res.status(404).json({ error: 'Claim not found' }); return; }
-    if (claim.status !== 'PENDING') {
+    if (claim.status !== 'PENDING' && claim.status !== 'REJECTED') {
       res.status(400).json({ error: `Claim is already ${claim.status}` });
       return;
+    }
+
+    // Payroll lock: block re-approve if that month's payroll is finalized
+    if (claim.status === 'REJECTED') {
+      const claimMonth = new Date(claim.createdAt).getMonth() + 1;
+      const claimYear  = new Date(claim.createdAt).getFullYear();
+      const finalizedRun = await prisma.payrollRun.findFirst({
+        where: { month: claimMonth, year: claimYear, status: 'FINALIZED' },
+      });
+      if (finalizedRun) {
+        res.status(400).json({ error: 'Cannot change claim status — payroll for this month is already finalized' });
+        return;
+      }
     }
 
     // Cannot approve your own claim
@@ -160,7 +173,7 @@ router.patch('/:id/approve', authorize(['ADMIN', 'MANAGER']), async (req: AuthRe
       action: 'CLAIM_APPROVED',
       entity: 'Reimbursement',
       entityId: id,
-      oldValues: { status: 'PENDING' },
+      oldValues: { status: claim.status },
       newValues: { status: 'APPROVED' },
       changeSource: 'WEB',
     });
@@ -227,9 +240,22 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
   try {
     const claim = await prisma.reimbursement.findUnique({ where: { id } });
     if (!claim) { res.status(404).json({ error: 'Claim not found' }); return; }
-    if (claim.status !== 'PENDING') {
-      res.status(400).json({ error: `Claim is already ${claim.status}` });
+    if (claim.status !== 'PENDING' && claim.status !== 'APPROVED') {
+      res.status(400).json({ error: `Cannot reject a claim that is ${claim.status}` });
       return;
+    }
+
+    // Payroll lock: block re-reject if that month's payroll is finalized
+    if (claim.status === 'APPROVED') {
+      const claimMonth = new Date(claim.createdAt).getMonth() + 1;
+      const claimYear  = new Date(claim.createdAt).getFullYear();
+      const finalizedRun = await prisma.payrollRun.findFirst({
+        where: { month: claimMonth, year: claimYear, status: 'FINALIZED' },
+      });
+      if (finalizedRun) {
+        res.status(400).json({ error: 'Cannot change claim status — payroll for this month is already finalized' });
+        return;
+      }
     }
 
     // Cannot reject your own claim
@@ -255,7 +281,7 @@ router.patch('/:id/reject', authorize(['ADMIN', 'MANAGER']), async (req: AuthReq
       action: 'CLAIM_REJECTED',
       entity: 'Reimbursement',
       entityId: id,
-      oldValues: { status: 'PENDING' },
+      oldValues: { status: claim.status },
       newValues: { status: 'REJECTED' },
       changeSource: 'WEB',
     });

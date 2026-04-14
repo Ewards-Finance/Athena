@@ -38,6 +38,7 @@ const bulkUpdateSchema = z.array(
     label:        z.string().min(1),
     defaultTotal: z.number().int().min(0),
     isActive:     z.boolean(),
+    allowedFor:   z.enum(['ALL', 'FULL_TIME', 'INTERN']).optional(),
   })
 );
 
@@ -120,7 +121,7 @@ router.put('/', authorize(['ADMIN']), async (req: AuthRequest, res: Response) =>
     const ops = parsed.data.map((p) =>
       prisma.leavePolicy.update({
         where:  { id: p.id },
-        data:   { label: p.label, defaultTotal: p.defaultTotal, isActive: p.isActive },
+        data:   { label: p.label, defaultTotal: p.defaultTotal, isActive: p.isActive, ...(p.allowedFor ? { allowedFor: p.allowedFor } : {}) },
       })
     );
     const results = await prisma.$transaction(ops);

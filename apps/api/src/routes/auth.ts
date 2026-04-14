@@ -35,7 +35,7 @@ router.post('/login', async (req: Request, res: Response) => {
     // Fetch user from DB (include profile for display name)
     const user = await prisma.user.findUnique({
       where: { email },
-      include: { profile: { select: { firstName: true, lastName: true, employeeId: true, department: true } } },
+      include: { profile: { select: { firstName: true, lastName: true, employeeId: true, department: true, employmentType: true } } },
     });
 
     // Use a generic error message to avoid leaking which emails exist (security best practice)
@@ -67,10 +67,11 @@ router.post('/login', async (req: Request, res: Response) => {
         id:         user.id,
         email:      user.email,
         role:       user.role,
-        firstName:  user.profile?.firstName,
-        lastName:   user.profile?.lastName,
-        employeeId: user.profile?.employeeId,
-        department: user.profile?.department,
+        firstName:      user.profile?.firstName,
+        lastName:       user.profile?.lastName,
+        employeeId:     user.profile?.employeeId,
+        department:     user.profile?.department,
+        employmentType: user.profile?.employmentType,
       },
     });
   } catch (err) {
@@ -93,9 +94,10 @@ router.get('/me', authenticate, async (req: AuthRequest, res: Response) => {
             firstName:     true,
             lastName:      true,
             employeeId:    true,
-            designation:   true,
-            department:    true,
+            designation:    true,
+            department:     true,
             officeLocation: true,
+            employmentType: true,
           },
         },
       },

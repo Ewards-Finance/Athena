@@ -14,6 +14,7 @@ interface AuthUser {
   lastName?:  string;
   employeeId?: string;
   department?: string;
+  employmentType?: string;
 }
 
 interface AuthState {

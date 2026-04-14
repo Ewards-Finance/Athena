@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, Settings2, Save, Clock, CalendarDays, AlertCircle, Key, DatabaseBackup, Copy, Check, Trash2, RefreshCw, Users2, IndianRupee } from 'lucide-react';
+import { Loader2, Settings2, Save, Clock, CalendarDays, AlertCircle, Key, DatabaseBackup, Copy, Check, Trash2, RefreshCw, Users2, IndianRupee, Leaf } from 'lucide-react';
 
 interface Settings {
   extension_arrival_time:    string;
@@ -101,6 +101,13 @@ export default function Settings() {
   const [creatingDel, setCreatingDel]       = useState(false);
   const [delError, setDelError]             = useState('');
 
+  // ── Leave Eligibility state ─────────────────────────────────────────────
+  interface LeaveEligibility { id: string; leaveType: string; label: string; allowedFor: string; isActive: boolean; defaultTotal: number }
+  const [leavePolicies, setLeavePolicies] = useState<LeaveEligibility[]>([]);
+  const [eligibilityDraft, setEligibilityDraft] = useState<Record<string, string>>({});
+  const [savingEligibility, setSavingEligibility] = useState(false);
+  const [eligibilitySaved, setEligibilitySaved] = useState(false);
+
   const fetchDelegations = () => {
     api.get('/delegates/active').then((r) => setDelegations(r.data)).catch(() => {});
   };
@@ -113,13 +120,19 @@ export default function Settings() {
       api.get('/backups'),
       api.get('/delegates/active'),
       api.get('/employees').then((r) => r.data.filter((u: any) => u.role === 'ADMIN' || u.role === 'MANAGER' || u.role === 'OWNER')).catch(() => []),
-    ]).then(([settingsRes, keysRes, statusRes, logsRes, delRes, mgrs]) => {
+      api.get('/leave-policy').catch(() => ({ data: [] })),
+    ]).then(([settingsRes, keysRes, statusRes, logsRes, delRes, mgrs, policiesRes]) => {
       setSettings(settingsRes.data);
       setApiKeys(keysRes.data);
       setBackupStatus(statusRes.data);
       setBackupLogs(logsRes.data);
       setDelegations(delRes.data);
       setManagers(mgrs);
+      const policies = policiesRes.data as LeaveEligibility[];
+      setLeavePolicies(policies);
+      const draft: Record<string, string> = {};
+      policies.forEach((p: LeaveEligibility) => { draft[p.id] = p.allowedFor || 'ALL'; });
+      setEligibilityDraft(draft);
     }).catch(() => setError('Failed to load settings'))
       .finally(() => setLoading(false));
   }, []);
@@ -329,6 +342,85 @@ export default function Settings() {
           <span className="text-sm text-green-600 font-medium">Settings saved successfully.</span>
         )}
       </div>
+
+      {/* ── Leave Eligibility by Employment Type ─────────────────────────── */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Leaf className="h-4 w-4" />
+            Leave Eligibility by Employment Type
+          </CardTitle>
+          <CardDescription>
+            Control which leave types are available for full-time employees vs interns. Set to "All" for both.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {leavePolicies.filter((p) => p.isActive).length === 0 ? (
+            <p className="text-sm text-muted-foreground">No active leave policies found.</p>
+          ) : (
+            <>
+              <div className="border rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b text-xs text-gray-500 uppercase">
+                      <th className="px-4 py-2 text-left">Leave Type</th>
+                      <th className="px-4 py-2 text-left">Available For</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {leavePolicies.filter((p) => p.isActive).map((p) => (
+                      <tr key={p.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-2 font-medium">{p.label} <span className="text-xs text-muted-foreground">({p.leaveType})</span></td>
+                        <td className="px-4 py-2">
+                          <select
+                            value={eligibilityDraft[p.id] || 'ALL'}
+                            onChange={(e) => setEligibilityDraft((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                            className="border rounded-md px-3 py-1.5 text-sm bg-background"
+                          >
+                            <option value="ALL">All Employees</option>
+                            <option value="FULL_TIME">Full-Time Only</option>
+                            <option value="INTERN">Intern Only</option>
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex items-center gap-3">
+                <Button
+                  disabled={savingEligibility}
+                  onClick={async () => {
+                    setSavingEligibility(true);
+                    setEligibilitySaved(false);
+                    try {
+                      const updates = leavePolicies.filter((p) => p.isActive).map((p) => ({
+                        id: p.id,
+                        label: p.label,
+                        defaultTotal: p.defaultTotal,
+                        isActive: true,
+                        allowedFor: eligibilityDraft[p.id] || 'ALL',
+                      }));
+                      await api.put('/leave-policy', updates);
+                      setEligibilitySaved(true);
+                      setTimeout(() => setEligibilitySaved(false), 3000);
+                    } catch {
+                      alert('Failed to save leave eligibility');
+                    } finally {
+                      setSavingEligibility(false);
+                    }
+                  }}
+                  style={{ backgroundColor: '#361963' }}
+                >
+                  {savingEligibility ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Save className="h-4 w-4 mr-2" />}
+                  Save Eligibility
+                </Button>
+                {eligibilitySaved && <span className="text-sm text-green-600 font-medium">Eligibility saved.</span>}
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
 
       {/* ── API Keys ──────────────────────────────────────────────────────── */}
       <Card>
